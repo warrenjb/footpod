@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foot Pod</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #6b7280;
+    --accent: #16a34a; --warn: #dc2626; --line: #e5e7eb; --btn: #111827; --btn-text: #fff;
+    --grid: #eceef1; --series-1: #2a78d6; --series-2: #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b22; --text: #f3f4f6; --muted: #9ca3af;
+      --accent: #22c55e; --warn: #f87171; --line: #2a2f3a; --btn: #f3f4f6; --btn-text: #111827;
+      --grid: #232833; --series-1: #3987e5; --series-2: #d95926;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    padding: 16px; max-width: 560px; margin-inline: auto;
+  }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 8px; }
+  h1 { font-size: 1.1rem; margin: 0; }
+  h2 { font-size: .95rem; margin: 0 0 10px; }
+  #status { font-size: .85rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  #dot.on { background: var(--accent); }
+  #dot.retry { background: var(--warn); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    flex: 1; min-width: 90px; padding: 14px 10px; font-size: 1rem; font-weight: 600; font-family: inherit;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text);
+  }
+  button.primary { background: var(--btn); color: var(--btn-text); border-color: var(--btn); }
+  button.danger { background: var(--warn); color: #fff; border-color: var(--warn); }
+  button.small { flex: none; min-width: 0; padding: 8px 12px; font-size: .85rem; }
+  button:disabled { opacity: .4; }
+  #cadence { font-size: 6.5rem; font-weight: 800; text-align: center; line-height: 1; font-variant-numeric: tabular-nums; }
+  .label { text-align: center; color: var(--muted); font-size: .9rem; margin-top: 4px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
+  .stat .v { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { color: var(--muted); font-size: .78rem; }
+  .chart-title { display: flex; justify-content: space-between; font-size: .8rem; color: var(--muted); margin: 4px 0; }
+  .chart-title b { color: var(--text); font-weight: 600; }
+  canvas { width: 100%; height: 120px; display: block; }
+  .note { color: var(--muted); font-size: .82rem; line-height: 1.4; margin: 8px 0 0; }
+  .steps { margin: 0 0 12px; padding-left: 20px; color: var(--muted); font-size: .88rem; line-height: 1.5; }
+  .result { font-size: .9rem; line-height: 1.6; margin-top: 12px; }
+  .result .ok { color: var(--accent); font-weight: 600; }
+  .result .bad { color: var(--warn); font-weight: 600; }
+  input[type=text] {
+    width: 100%; padding: 12px; font-size: 1rem; font-family: inherit; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); margin-bottom: 10px;
+  }
+  #recTimer { font-size: 2.4rem; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; margin: 6px 0 10px; }
+  #recTimer.live { color: var(--warn); }
+  .rec { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .rec .name { font-weight: 600; font-size: .9rem; word-break: break-all; }
+  .rec .meta { color: var(--muted); font-size: .8rem; margin: 2px 0 8px; }
+  #countdown {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column;
+    background: color-mix(in srgb, var(--bg) 92%, transparent); z-index: 10; text-align: center; padding: 24px;
+  }
+  #countdown .big { font-size: 7rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+  #countdown .what { font-size: 1.2rem; color: var(--muted); }
+  #unsupported { display: none; color: var(--warn); }
+  .warn-text { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foot Pod</h1>
+  <div id="status"><span id="dot"></span><span id="statusText">Disconnected</span></div>
+</header>
+
+<p id="unsupported" class="card">This browser doesn't support Web Bluetooth. Open this page in Chrome on Android or desktop.</p>
+
+<div class="card">
+  <div class="row">
+    <button id="connectBtn" class="primary">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="v" id="rate">–</div><div class="k">samples/s</div></div>
+    <div class="stat"><div class="v" id="lost">0</div><div class="k">lost packets</div></div>
+    <div class="stat"><div class="v" id="clip">0</div><div class="k">clipped samples</div></div>
+  </div>
+  <p class="note warn-text" id="mtuWarn" hidden>Packets are arriving split up — the Bluetooth MTU didn't negotiate. Try disconnecting and reconnecting.</p>
+</div>
+
+<div class="card">
+  <div id="cadence">–</div>
+  <div class="label">cadence, steps/min</div>
+  <div class="stats">
+    <div class="stat"><div class="v" id="steps">0</div><div class="k">steps</div></div>
+    <div class="stat"><div class="v" id="strides">0</div><div class="k">strides (this foot)</div></div>
+    <div class="stat"><div class="v" id="peakG">–</div><div class="k">peak g, last 5 s</div></div>
+  </div>
+  <p class="note" id="cadNote">Cadence uses an automatic axis guess until you run the mounting check.</p>
+</div>
+
+<div class="card">
+  <div class="chart-title"><b>Acceleration</b><span>magnitude, g · last 5 s</span></div>
+  <canvas id="accChart"></canvas>
+  <div class="chart-title" style="margin-top:12px"><b>Foot pitch rate</b><span>deg/s · dots = detected strides</span></div>
+  <canvas id="gyrChart"></canvas>
+</div>
+
+<div class="card">
+  <h2>Mounting check</h2>
+  <ol class="steps">
+    <li>Clip the pod on your laces and connect.</li>
+    <li>Stand still: tap the button and don't move for 3 seconds.</li>
+    <li>Walk: tap the button and walk normally for 8 seconds.</li>
+  </ol>
+  <div class="row">
+    <button id="stillBtn" disabled>1 · Stand still</button>
+    <button id="walkBtn" disabled>2 · Walk</button>
+  </div>
+  <div class="result" id="mountResult">Not calibrated.</div>
+  <div class="row" style="margin-top:10px"><button id="clearMountBtn" class="small" disabled>Clear calibration</button></div>
+</div>
+
+<div class="card">
+  <h2>Record a run</h2>
+  <input type="text" id="recLabel" placeholder="Label, e.g. tm_6mph or track_400m" autocomplete="off">
+  <div id="recTimer">0:00</div>
+  <div class="row">
+    <button id="recBtn" class="primary" disabled>Start recording</button>
+  </div>
+  <p class="note">The screen stays on while recording. Keep this tab open: Chrome can stop receiving data if you switch apps or lock the phone. Files save in the same format as the laptop logger, so <code>footpod_plot.py</code> reads them.</p>
+  <div id="recList"></div>
+</div>
+
+<div id="countdown"><div class="big" id="cdNum">3</div><div class="what" id="cdWhat">Stand still</div></div>
+
+<script>
+const SVC = 'a3c40000-5f1d-4b8e-9c3a-7d1e2f3b4c50';
+const CHR = 'a3c40001-5f1d-4b8e-9c3a-7d1e2f3b4c50';
+const PKT_LEN = 236;
+const ACC = 0.000488, GYR = 0.070;          // g/LSB, dps/LSB
+const ACC_CLIP = 15.9, GYR_CLIP = 1990;
+const WINDOW_S = 5;
+const MIN_STRIDE_S = 0.4, MAX_GAP_S = 2.5;
+
+const $ = id => document.getElementById(id);
+
+// ---------- state ----------
+let device = null, chr = null, wantConnected = false, retryTimer = null;
+let fs = 416;
+let lastT0 = null, wrap = 0, lastSeq = null;
+let lostTotal = 0, badLen = 0, clipCount = 0, rateCount = 0;
+
+const RING = 4096;
+const ring = { t: new Float64Array(RING), a: new Float32Array(RING), w: new Float32Array(RING), i: 0, n: 0 };
+let markers = [];                     // {t, w}
+
+// mounting calibration
+let mount = null;                     // {bias:[3], gravity:[3], axis, sign, ...}
+let collector = null;                 // active still/walk capture
+
+// auto axis tracking (used until calibrated)
+const ema1 = [0, 0, 0], ema2 = [0, 0, 0], posEnv = [0, 0, 0], negEnv = [0, 0, 0];
+
+// stride detector
+let env = 0, above = false, pkV = 0, pkT = 0, lastStrideT = -1e9;
+let intervals = [], strideCount = 0;
+
+// recording
+let rec = null, recordings = [], wakeLock = null;
+
+// ---------- connection ----------
+if (!navigator.bluetooth) {
+  $('unsupported').style.display = 'block';
+  $('connectBtn').disabled = true;
+}
+
+function setStatus(text, cls) {
+  $('statusText').textContent = text;
+  $('dot').className = cls || '';
+}
+
+$('connectBtn').onclick = async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }, { namePrefix: 'FootPod' }],
+      optionalServices: [SVC]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    wantConnected = true;
+    loadMount();
+    await connectGatt();
+  } catch (e) {
+    if (e.name !== 'NotFoundError') setStatus('Error: ' + e.message, 'retry');
+  }
+};
+
+$('disconnectBtn').onclick = () => {
+  wantConnected = false;
+  clearTimeout(retryTimer);
+  if (device && device.gatt.connected) device.gatt.disconnect();
+  setStatus('Disconnected');
+  updateButtons();
+};
+
+async function connectGatt() {
+  setStatus('Connecting…', 'retry');
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+  chr = await svc.getCharacteristic(CHR);
+  chr.addEventListener('characteristicvaluechanged', onNotify);
+  await chr.startNotifications();
+  lastSeq = null;
+  setStatus(device.name || 'FootPod', 'on');
+  updateButtons();
+}
+
+function onDisconnected() {
+  updateButtons();
+  if (!wantConnected) return;
+  setStatus('Reconnecting…', 'retry');
+  const attempt = async () => {
+    if (!wantConnected) return;
+    try { await connectGatt(); }
+    catch (e) { retryTimer = setTimeout(attempt, 2000); }
+  };
+  retryTimer = setTimeout(attempt, 1000);
+}
+
+function connected() { return !!(device && device.gatt.connected); }
+
+function updateButtons() {
+  const c = connected();
+  $('connectBtn').disabled = !navigator.bluetooth || c;
+  $('disconnectBtn').disabled = !c && !wantConnected;
+  $('stillBtn').disabled = !c || !!collector;
+  $('walkBtn').disabled = !c || !!collector || !pendingStill;
+  $('recBtn').disabled = !c && !rec;
+  $('clearMountBtn').disabled = !mount;
+}
+
+// ---------- packet parsing ----------
+function onNotify(e) {
+  const dv = e.target.value;
+  if (dv.byteLength !== PKT_LEN) { badLen++; $('mtuWarn').hidden = false; return; }
+  const t0 = dv.getUint32(0, true), seq = dv.getUint16(4, true), n = dv.getUint8(6), od = dv.getUint8(7);
+  if (lastT0 !== null && t0 < lastT0 - 2 ** 31) wrap += 2 ** 32;
+  lastT0 = t0;
+  if (lastSeq !== null) {
+    const lost = (seq - lastSeq - 1) & 0xFFFF;
+    lostTotal += lost;
+    if (rec) rec.lost += lost;
+  }
+  lastSeq = seq;
+  fs = od * 8;
+  const dt = 1e6 / fs;
+
+  if (rec) rec.packets.push(new Uint8Array(dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength)));
+
+  for (let i = 0; i < n; i++) {
+    const o = 8 + i * 12;
+    const gx = dv.getInt16(o, true) * GYR, gy = dv.getInt16(o + 2, true) * GYR, gz = dv.getInt16(o + 4, true) * GYR;
+    const ax = dv.getInt16(o + 6, true) * ACC, ay = dv.getInt16(o + 8, true) * ACC, az = dv.getInt16(o + 10, true) * ACC;
+    processSample((t0 + wrap + i * dt) / 1e6, [ax, ay, az], [gx, gy, gz]);
+  }
+  rateCount += n;
+}
+
+// ---------- per-sample processing ----------
+function processSample(t, a, g) {
+  if (Math.abs(a[0]) >= ACC_CLIP || Math.abs(a[1]) >= ACC_CLIP || Math.abs(a[2]) >= ACC_CLIP ||
+      Math.abs(g[0]) >= GYR_CLIP || Math.abs(g[1]) >= GYR_CLIP || Math.abs(g[2]) >= GYR_CLIP) clipCount++;
+
+  if (collector) collect(a, g);
+
+  const bias = mount ? mount.bias : [0, 0, 0];
+  const gb = [g[0] - bias[0], g[1] - bias[1], g[2] - bias[2]];
+
+  const alpha = 1 / (4 * fs), decay = Math.exp(-1 / (3 * fs));
+  for (let k = 0; k < 3; k++) {
+    ema1[k] += alpha * (gb[k] - ema1[k]);
+    ema2[k] += alpha * (gb[k] * gb[k] - ema2[k]);
+    posEnv[k] = Math.max(gb[k], posEnv[k] * decay);
+    negEnv[k] = Math.max(-gb[k], negEnv[k] * decay);
+  }
+  let axis, sign;
+  if (mount) { axis = mount.axis; sign = mount.sign; }
+  else {
+    axis = 0;
+    for (let k = 1; k < 3; k++) if (ema2[k] - ema1[k] ** 2 > ema2[axis] - ema1[axis] ** 2) axis = k;
+    sign = posEnv[axis] >= negEnv[axis] ? 1 : -1;
+  }
+  const w = sign * gb[axis];
+
+  ring.t[ring.i] = t; ring.a[ring.i] = Math.hypot(a[0], a[1], a[2]); ring.w[ring.i] = w;
+  ring.i = (ring.i + 1) % RING; ring.n = Math.min(ring.n + 1, RING);
+
+  // stride detector: one big pitch-rate peak per stride (mid-swing)
+  env = Math.max(w, env * decay);
+  const thr = Math.max(80, 0.5 * env);
+  if (!above) {
+    if (w > thr) { above = true; pkV = w; pkT = t; }
+  } else {
+    if (w > pkV) { pkV = w; pkT = t; }
+    if (w < thr * 0.6) {
+      above = false;
+      if (pkT - lastStrideT > MIN_STRIDE_S) registerStride(pkT, pkV);
+    }
+  }
+}
+
+function registerStride(t, w) {
+  const iv = t - lastStrideT;
+  if (iv < MAX_GAP_S) {
+    intervals.push(iv);
+    if (intervals.length > 8) intervals.shift();
+    if (rec) rec.intervals.push(iv);
+  }
+  lastStrideT = t;
+  strideCount++;
+  if (rec) rec.strides++;
+  markers.push({ t, w });
+  if (markers.length > 40) markers.shift();
+}
+
+function median(arr) {
+  if (!arr.length) return NaN;
+  const s = [...arr].sort((x, y) => x - y), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// ---------- mounting check ----------
+let pendingStill = null;
+
+function collect(a, g) {
+  const c = collector;
+  c.n++;
+  if (c.phase === 'still') {
+    for (let k = 0; k < 3; k++) {
+      c.sa[k] += a[k]; c.sg[k] += g[k]; c.sg2[k] += g[k] * g[k];
+    }
+    const m = Math.hypot(a[0], a[1], a[2]); c.sm += m; c.sm2 += m * m;
+  } else {
+    for (let k = 0; k < 3; k++) c.g[k].push(g[k] - pendingStill.bias[k]);
+  }
+  if (c.n >= c.target) finishCollect();
+}
+
+function startCollect(phase, seconds, what) {
+  collector = phase === 'still'
+    ? { phase, n: 0, target: Math.round(seconds * fs), sa: [0, 0, 0], sg: [0, 0, 0], sg2: [0, 0, 0], sm: 0, sm2: 0 }
+    : { phase, n: 0, target: Math.round(seconds * fs), g: [[], [], []] };
+  updateButtons();
+  const cd = $('countdown');
+  cd.style.display = 'flex';
+  $('cdWhat').textContent = what;
+  const t0 = performance.now();
+  const tick = () => {
+    if (!collector) { cd.style.display = 'none'; return; }
+    const left = Math.max(0, seconds - (performance.now() - t0) / 1000);
+    $('cdNum').textContent = Math.ceil(left);
+    if (!connected()) { collector = null; cd.style.display = 'none'; $('mountResult').innerHTML = '<span class="bad">Lost connection — try again.</span>'; updateButtons(); return; }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function finishCollect() {
+  const c = collector;
+  collector = null;
+  $('countdown').style.display = 'none';
+  if (c.phase === 'still') {
+    const n = c.n;
+    const grav = c.sa.map(v => v / n), bias = c.sg.map(v => v / n);
+    const gStd = Math.max(...c.sg2.map((v, k) => Math.sqrt(Math.max(0, v / n - bias[k] ** 2))));
+    const mStd = Math.sqrt(Math.max(0, c.sm2 / n - (c.sm / n) ** 2));
+    if (gStd > 3 || mStd > 0.03) {
+      pendingStill = null;
+      $('mountResult').innerHTML = `<span class="bad">Too much movement</span> (gyro noise ${gStd.toFixed(1)} deg/s). Stand still and try again.`;
+    } else {
+      pendingStill = { bias, gravity: grav };
+      $('mountResult').innerHTML = `<span class="ok">Still reading OK.</span> ${describeGravity(grav)}<br>Gyro offset: ${bias.map(v => v.toFixed(2)).join(', ')} deg/s. Now tap <b>Walk</b>.`;
+    }
+  } else {
+    const vars = c.g.map(arr => {
+      const m = arr.reduce((s, v) => s + v, 0) / arr.length;
+      return arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length;
+    });
+    let axis = 0;
+    for (let k = 1; k < 3; k++) if (vars[k] > vars[axis]) axis = k;
+    const arr = c.g[axis];
+    const mx = Math.max(...arr), mn = Math.min(...arr);
+    const sign = mx >= -mn ? 1 : -1;
+    const strides = countStrides(arr.map(v => v * sign));
+    if (strides < 3 || Math.max(mx, -mn) < 150) {
+      $('mountResult').innerHTML = `<span class="bad">Couldn't see clear strides</span> (found ${strides}). Walk at a normal pace for the full 8 seconds and try again.`;
+    } else {
+      mount = { ...pendingStill, axis, sign, date: new Date().toISOString(), device: device && device.name };
+      saveMount();
+      resetDetector();
+      showMount(strides);
+    }
+  }
+  updateButtons();
+}
+
+function countStrides(arr) {
+  let e = 0, ab = false, pv = 0, pi = 0, last = -1e9, count = 0;
+  const decay = Math.exp(-1 / (3 * fs));
+  arr.forEach((w, i) => {
+    e = Math.max(w, e * decay);
+    const thr = Math.max(80, 0.5 * e);
+    if (!ab) { if (w > thr) { ab = true; pv = w; pi = i; } }
+    else {
+      if (w > pv) { pv = w; pi = i; }
+      if (w < thr * 0.6) { ab = false; if ((pi - last) / fs > MIN_STRIDE_S) { count++; last = pi; } }
+    }
+  });
+  return count;
+}
+
+function describeGravity(g) {
+  let k = 0;
+  for (let j = 1; j < 3; j++) if (Math.abs(g[j]) > Math.abs(g[k])) k = j;
+  const mag = Math.hypot(...g);
+  const tilt = Math.acos(Math.min(1, Math.abs(g[k]) / mag)) * 180 / Math.PI;
+  return `Board ${g[k] >= 0 ? '+' : '−'}${'XYZ'[k]} faces up, tilted ${tilt.toFixed(0)}°.`;
+}
+
+function showMount(strides) {
+  if (!mount) { $('mountResult').textContent = 'Not calibrated.'; $('cadNote').hidden = false; return; }
+  const when = new Date(mount.date).toLocaleString();
+  $('mountResult').innerHTML =
+    `<span class="ok">Calibrated</span>${strides ? ` — saw ${strides} strides` : ''}.<br>` +
+    `${describeGravity(mount.gravity)}<br>` +
+    `Pitch axis: ${mount.sign > 0 ? '+' : '−'}${'XYZ'[mount.axis]} gyro. Saved ${when}.`;
+  $('cadNote').hidden = true;
+}
+
+function mountKey() { return 'footpod-mount-' + ((device && device.name) || 'default'); }
+function saveMount() { try { localStorage.setItem(mountKey(), JSON.stringify(mount)); } catch (e) {} }
+function loadMount() {
+  try { const s = localStorage.getItem(mountKey()); mount = s ? JSON.parse(s) : null; } catch (e) { mount = null; }
+  showMount();
+  updateButtons();
+}
+
+function resetDetector() {
+  env = 0; above = false; lastStrideT = -1e9; intervals = []; markers = [];
+}
+
+$('stillBtn').onclick = () => startCollect('still', 3, 'Stand still');
+$('walkBtn').onclick = () => startCollect('walk', 8, 'Walk normally');
+$('clearMountBtn').onclick = () => {
+  mount = null; pendingStill = null;
+  try { localStorage.removeItem(mountKey()); } catch (e) {}
+  resetDetector(); showMount(); updateButtons();
+};
+
+// ---------- recording ----------
+$('recBtn').onclick = async () => {
+  if (!rec) {
+    rec = { start: Date.now(), packets: [], lost: 0, strides: 0, intervals: [],
+            label: ($('recLabel').value.trim() || 'run').replace(/[^\w.-]+/g, '_'),
+            side: device && device.name ? device.name.replace(/^FootPod-?/, '') : '' };
+    $('recBtn').textContent = 'Stop recording';
+    $('recBtn').className = 'danger';
+    $('recTimer').classList.add('live');
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  } else {
+    finishRecording();
+  }
+  updateButtons();
+};
+
+document.addEventListener('visibilitychange', async () => {
+  if (rec && document.visibilityState === 'visible' && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+});
+
+function finishRecording() {
+  const r = rec;
+  rec = null;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  $('recBtn').textContent = 'Start recording';
+  $('recBtn').className = 'primary';
+  $('recTimer').classList.remove('live');
+  if (!r.packets.length) return;
+  const d = new Date(r.start), p = v => String(v).padStart(2, '0');
+  r.name = `${r.label}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${r.side ? '_' + r.side : ''}.csv`;
+  r.blob = buildCsv(r.packets);
+  r.samples = r.packets.length * 19;
+  r.seconds = (Date.now() - r.start) / 1000;
+  r.cadence = r.intervals.length ? 120 / median(r.intervals) : NaN;
+  r.saved = false;
+  r.packets = null;
+  recordings.unshift(r);
+  renderRecordings();
+}
+
+function buildCsv(packets) {
+  const parts = ['t_us,seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps\n'];
+  let lt = null, wr = 0;
+  for (const p of packets) {
+    const dv = new DataView(p.buffer);
+    const t0 = dv.getUint32(0, true), seq = dv.getUint16(4, true), n = dv.getUint8(6), od = dv.getUint8(7);
+    if (lt !== null && t0 < lt - 2 ** 31) wr += 2 ** 32;
+    lt = t0;
+    const dt = 1e6 / (od * 8);
+    let s = '';
+    for (let i = 0; i < n; i++) {
+      const o = 8 + i * 12;
+      s += Math.round(t0 + wr + i * dt) + ',' + seq + ',' +
+        (dv.getInt16(o + 6, true) * ACC).toFixed(4) + ',' + (dv.getInt16(o + 8, true) * ACC).toFixed(4) + ',' +
+        (dv.getInt16(o + 10, true) * ACC).toFixed(4) + ',' + (dv.getInt16(o, true) * GYR).toFixed(2) + ',' +
+        (dv.getInt16(o + 2, true) * GYR).toFixed(2) + ',' + (dv.getInt16(o + 4, true) * GYR).toFixed(2) + '\n';
+    }
+    parts.push(s);
+  }
+  return new Blob(parts, { type: 'text/csv' });
+}
+
+function fmtDur(s) {
+  s = Math.round(s);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function renderRecordings() {
+  const box = $('recList');
+  box.innerHTML = '';
+  recordings.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'rec';
+    const cad = isNaN(r.cadence) ? '–' : Math.round(r.cadence);
+    div.innerHTML = `<div class="name"></div>
+      <div class="meta">${fmtDur(r.seconds)} · ${r.strides * 2} steps · cadence ${cad} spm · ${r.lost} lost packets · ${(r.blob.size / 1e6).toFixed(1)} MB${r.saved ? ' · saved' : ''}</div>
+      <div class="row"><button class="small dl">Download</button><button class="small sh" hidden>Share</button></div>`;
+    div.querySelector('.name').textContent = r.name;
+    div.querySelector('.dl').onclick = () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(r.blob);
+      a.download = r.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      r.saved = true; renderRecordings();
+    };
+    const file = new File([r.blob], r.name, { type: 'text/csv' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      const sh = div.querySelector('.sh');
+      sh.hidden = false;
+      sh.onclick = async () => {
+        try { await navigator.share({ files: [file], title: r.name }); r.saved = true; renderRecordings(); } catch (e) {}
+      };
+    }
+    box.appendChild(div);
+  });
+}
+
+window.addEventListener('beforeunload', e => {
+  if (rec || recordings.some(r => !r.saved)) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ---------- charts ----------
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function sizeCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, W: r.width, H: r.height };
+}
+
+function drawChart(cv, key, tEnd, ymin, ymax, color, refs, withMarkers) {
+  const { ctx, W, H } = sizeCanvas(cv);
+  const padL = 34, padR = 4, padT = 6, padB = 6;
+  const pw = W - padL - padR, ph = H - padT - padB;
+  const x = t => padL + (t - (tEnd - WINDOW_S)) / WINDOW_S * pw;
+  const y = v => padT + (1 - (v - ymin) / (ymax - ymin)) * ph;
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'right';
+  ctx.lineWidth = 1;
+  refs.forEach(v => {
+    ctx.strokeStyle = css('--grid');
+    ctx.beginPath(); ctx.moveTo(padL, y(v)); ctx.lineTo(W - padR, y(v)); ctx.stroke();
+    ctx.fillStyle = css('--muted');
+    ctx.fillText(String(v), padL - 6, y(v));
+  });
+
+  if (!ring.n) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  let started = false;
+  for (let j = ring.n; j >= 1; j--) {
+    const idx = (ring.i - j + RING) % RING;
+    const t = ring.t[idx];
+    if (t < tEnd - WINDOW_S) continue;
+    const v = Math.max(ymin, Math.min(ymax, ring[key][idx]));
+    if (!started) { ctx.moveTo(x(t), y(v)); started = true; } else ctx.lineTo(x(t), y(v));
+  }
+  ctx.stroke();
+
+  if (withMarkers) {
+    markers.forEach(m => {
+      if (m.t < tEnd - WINDOW_S) return;
+      const cx = x(m.t), cy = y(Math.min(ymax, m.w));
+      ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fillStyle = css('--card'); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = css('--text'); ctx.fill();
+    });
+  }
+}
+
+function windowMax(key, tEnd, abs) {
+  let m = 0;
+  for (let j = 1; j <= ring.n; j++) {
+    const idx = (ring.i - j + RING) % RING;
+    if (ring.t[idx] < tEnd - WINDOW_S) break;
+    const v = abs ? Math.abs(ring[key][idx]) : ring[key][idx];
+    if (v > m) m = v;
+  }
+  return m;
+}
+
+function frame() {
+  const tEnd = ring.n ? ring.t[(ring.i - 1 + RING) % RING] : WINDOW_S;
+  const aMax = windowMax('a', tEnd, false);
+  const aTop = Math.max(4, Math.ceil(aMax));
+  drawChart($('accChart'), 'a', tEnd, 0, aTop, css('--series-1'), [0, 1, aTop], false);
+  const wMax = windowMax('w', tEnd, true);
+  const wTop = Math.max(400, Math.ceil(wMax / 200) * 200);
+  drawChart($('gyrChart'), 'w', tEnd, -wTop, wTop, css('--series-2'), [-wTop, 0, wTop], true);
+
+  $('peakG').textContent = ring.n ? aMax.toFixed(1) : '–';
+  const live = ring.n && tEnd - lastStrideT < MAX_GAP_S && intervals.length >= 2;
+  $('cadence').textContent = live ? Math.round(120 / median(intervals.slice(-6))) : '–';
+  $('strides').textContent = strideCount;
+  $('steps').textContent = strideCount * 2;
+  if (rec) $('recTimer').textContent = fmtDur((Date.now() - rec.start) / 1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+setInterval(() => {
+  $('rate').textContent = connected() ? rateCount : '–';
+  $('lost').textContent = lostTotal;
+  $('clip').textContent = clipCount;
+  rateCount = 0;
+}, 1000);
+
+updateButtons();
+</script>
+</body>
+</html>
