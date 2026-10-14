@@ -79,3 +79,12 @@ Service `a3c40000-5f1d-4b8e-9c3a-7d1e2f3b4c50`, characteristic `a3c40001-…`.
 - Stack: battery on the floor (foam tape), JST plug pair on the battery at the closed end, XIAO on foam tape over the battery with its USB-C pushed into the wall opening.
 - Lid snaps on; for runs, seal the seam with a strip of electrical tape or a thin bead of silicone.
 - Lacing: point the USB-C end at your toes and thread one lace crossing through each tunnel underneath.
+
+### Ready-to-print G-code (Zonestar Z9V5 Pro)
+
+`case/slicing/` has G-code sliced with PrusaSlicer from `z9v5pro_petg.ini`: 0.4 mm nozzle, 1.75 mm PETG, 240/235 °C nozzle, 80 °C bed, 0.16 mm layers, 4 walls, 30% gyroid, no supports.
+
+- `footpod_base_z9v5pro_petg.gcode`: about 37 min, 1.8 m of filament
+- `footpod_lid_z9v5pro_petg.gcode`: about 14 min, 0.7 m
+
+Load the PETG in extruder 1 (the start code selects T0). The start code homes and then loads the saved bed mesh with `M420 S1`. If you don't keep a saved mesh, change that line to `G29`.
