@@ -90,3 +90,10 @@ Service `a3c40000-5f1d-4b8e-9c3a-7d1e2f3b4c50`, characteristic `a3c40001-…`.
 There is also a PLA+ set from `z9v5pro_plaplus.ini` (215/210 °C nozzle, 60 °C bed, full fan): `footpod_base_z9v5pro_plaplus.gcode` (about 35 min) and `footpod_lid_z9v5pro_plaplus.gcode` (about 12 min). PLA+ is fine for test fits; use PETG for the pod you run with, since PLA softens in a hot car.
 
 Load the PETG in extruder 1 (the start code selects T0). The start code homes and then loads the saved bed mesh with `M420 S1`. If you don't keep a saved mesh, change that line to `G29`.
+
+Full plates, base and lid together:
+
+| File | Parts | PLA+ time | PETG time |
+|---|---|---|---|
+| `footpod_1set_z9v5pro_<material>.gcode` | 1 base + 1 lid | ~47 min | ~51 min |
+| `footpod_2sets_z9v5pro_<material>.gcode` | 2 bases + 2 lids (left and right pods) | ~1 h 33 min | ~1 h 41 min |
