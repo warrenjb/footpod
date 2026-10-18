@@ -12,6 +12,8 @@ Goal: get clean raw IMU data from the pod onto your laptop, so cadence, contact 
 5. Open `footpod_capture/footpod_capture.ino`, set `POD_SIDE`, upload.
 6. Serial Monitor (115200) should show `WHO_AM_I = 0x6A` and `samples/s: ~416`.
 
+**Sleep:** after 5 minutes without movement (15 if the page is connected) the pod blinks purple three times and powers down; tap or pick it up to wake it. It never sleeps on USB power. Type `q` in the Serial Monitor to sleep right away.
+
 Untested on hardware — expect a compile fix or two. If the IMU fails to init, the board selection is the usual culprit.
 
 ## 2. Record

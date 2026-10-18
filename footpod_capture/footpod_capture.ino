@@ -5,6 +5,12 @@
 // Board:   "Seeed nRF52 Boards" (NOT the mbed-enabled package)
 //          -> Seeed XIAO nRF52840 Sense
 // Library: "Seeed Arduino LSM6DS3" (Library Manager)
+//
+// Sleep: after SLEEP_IDLE_MS without movement (longer while the page is
+// connected) the pod blinks purple three times and powers down. The IMU stays
+// on in a low-power wake-on-motion mode; tap or pick up the pod and it
+// restarts as if just powered on. It never sleeps while on USB power.
+// Type 'q' in the Serial Monitor to sleep immediately.
 
 #include <bluefruit.h>
 #include <Wire.h>
@@ -23,6 +29,12 @@ static const uint8_t SAMPLES_PER_PKT = 19;   // 8-byte header + 19*12 = 236 byte
 #define REG_CTRL3_C    0x12
 #define REG_STATUS     0x1E
 #define REG_OUTX_L_G   0x22   // gx,gy,gz,ax,ay,az — 12 bytes, little-endian int16
+#define REG_WAKE_UP_SRC 0x1B
+#define REG_CTRL6_C    0x15
+#define REG_TAP_CFG    0x58
+#define REG_WAKE_UP_THS 0x5B
+#define REG_WAKE_UP_DUR 0x5C
+#define REG_MD1_CFG    0x5E
 
 #if IMU_ODR_HZ == 416
   #define ODR_BITS 0x60
@@ -33,6 +45,15 @@ static const uint8_t SAMPLES_PER_PKT = 19;   // 8-byte header + 19*12 = 236 byte
 #endif
 #define XL_FS_16G     0x04    // ±16 g   -> 0.488 mg/LSB
 #define G_FS_2000DPS  0x0C    // ±2000 dps -> 70 mdps/LSB
+
+// ---------------- sleep ----------------
+const uint32_t SLEEP_IDLE_MS           = 5UL * 60 * 1000;   // still + not connected
+const uint32_t SLEEP_IDLE_CONNECTED_MS = 15UL * 60 * 1000;  // still + page connected
+const float    MOTION_G     = 0.05f;   // accel deviation from gravity that counts as movement
+const float    MOTION_DPS   = 15.0f;   // rotation rate that counts as movement
+const uint8_t  WAKE_THRESHOLD = 2;     // wake level in sleep, x31 mg (2 = ~62 mg)
+static uint32_t lastActivityMs = 0;
+static float gravX = 0, gravY = 0, gravZ = 1;   // low-passed accel, g
 
 // ---------------- BLE UUIDs ----------------
 // Service: a3c40000-5f1d-4b8e-9c3a-7d1e2f3b4c50
@@ -77,7 +98,18 @@ void onDisconnect(uint16_t conn_handle, uint8_t reason) {
 }
 
 // ---------------- setup ----------------
+// Undo wake-on-motion settings left over from the last sleep.
+void clearImuWakeConfig() {
+  imu.writeRegister(REG_MD1_CFG, 0x00);
+  imu.writeRegister(REG_TAP_CFG, 0x00);
+  imu.writeRegister(REG_CTRL6_C, 0x00);
+  imu.writeRegister(REG_WAKE_UP_THS, 0x00);
+  uint8_t junk;
+  imu.readRegister(&junk, REG_WAKE_UP_SRC);
+}
+
 void configureImu() {
+  clearImuWakeConfig();   // in case we just woke from sleep
   uint8_t who = 0;
   imu.readRegister(&who, REG_WHO_AM_I);
   Serial.print("IMU WHO_AM_I = 0x");
@@ -118,6 +150,64 @@ void setupBle() {
   Bluefruit.Advertising.start(0);
 }
 
+// ---------------- sleep ----------------
+bool onUsbPower() {
+  uint32_t status = 0;
+  sd_power_usbregstatus_get(&status);
+  return status & POWER_USBREGSTATUS_VBUSDETECT_Msk;
+}
+
+void ledsOff() {
+  digitalWrite(LED_RED, HIGH); digitalWrite(LED_GREEN, HIGH); digitalWrite(LED_BLUE, HIGH);
+}
+
+void goToSleep() {
+  Serial.println("Going to sleep");
+  pinMode(LED_RED, OUTPUT); pinMode(LED_GREEN, OUTPUT); pinMode(LED_BLUE, OUTPUT);
+  for (int i = 0; i < 3; i++) {               // three purple blinks
+    digitalWrite(LED_RED, LOW); digitalWrite(LED_BLUE, LOW); delay(150);
+    ledsOff(); delay(150);
+  }
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  Bluefruit.Advertising.stop();
+  if (Bluefruit.connected()) Bluefruit.disconnect(Bluefruit.connHandle());
+  delay(100);
+
+  // IMU: gyro off, accel 26 Hz low-power, +-2 g, wake-up interrupt on INT1.
+  imu.writeRegister(REG_CTRL2_G, 0x00);
+  imu.writeRegister(REG_CTRL1_XL, 0x20);
+  imu.writeRegister(REG_CTRL6_C, 0x10);              // accel high-performance off
+  imu.writeRegister(REG_WAKE_UP_DUR, 0x00);
+  imu.writeRegister(REG_WAKE_UP_THS, WAKE_THRESHOLD & 0x3F);
+  imu.writeRegister(REG_TAP_CFG, 0x90);              // interrupts on, high-pass slope filter
+  imu.writeRegister(REG_MD1_CFG, 0x20);              // wake-up -> INT1
+  delay(200);                                        // let the filter settle
+  uint8_t junk;
+  imu.readRegister(&junk, REG_WAKE_UP_SRC);          // clear any pending event
+
+  // The IMU power pin keeps its state in System OFF, so the sensor stays on.
+  // INT1 going HIGH wakes the board, which restarts from setup().
+  systemOff(PIN_LSM6DS3TR_C_INT1, HIGH);
+}
+
+void checkSleep(uint32_t ms, const int16_t* v) {
+  float ax = v[3] * 0.000488f, ay = v[4] * 0.000488f, az = v[5] * 0.000488f;
+  const float a = 1.0f / IMU_ODR_HZ;                 // ~1 s time constant
+  gravX += a * (ax - gravX); gravY += a * (ay - gravY); gravZ += a * (az - gravZ);
+  float dx = ax - gravX, dy = ay - gravY, dz = az - gravZ;
+  float gmax = max(max(abs(v[0]), abs(v[1])), abs(v[2])) * 0.070f;
+  if (dx * dx + dy * dy + dz * dz > MOTION_G * MOTION_G || gmax > MOTION_DPS) lastActivityMs = ms;
+}
+
+void maybeSleep(uint32_t ms) {
+  static uint32_t lastCheck = 0;
+  if (ms - lastCheck < 1000) return;
+  lastCheck = ms;
+  if (onUsbPower()) { lastActivityMs = ms; return; }
+  uint32_t limit = Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS;
+  if (ms - lastActivityMs > limit) goToSleep();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -143,6 +233,7 @@ void setup() {
   pkt.odr_div8 = IMU_ODR_HZ / 8;
 
   setupBle();
+  lastActivityMs = millis();
   Serial.println("FootPod-" POD_SIDE " ready, advertising");
 }
 
@@ -157,6 +248,7 @@ void loop() {
 
     if (pkt.n == 0) pkt.t0_us = now;
     memcpy(pkt.s[pkt.n], raw, 12);           // nRF52 is little-endian, same as the IMU
+    checkSleep(millis(), pkt.s[pkt.n]);
     statSamples++;
 
     if (++pkt.n == SAMPLES_PER_PKT) {
@@ -169,6 +261,8 @@ void loop() {
   }
 
   uint32_t ms = millis();
+  if (Serial.available() && Serial.read() == 'q') goToSleep();
+  maybeSleep(ms);
   if (ms - statLastMs >= 1000) {
     Serial.print("samples/s: ");
     Serial.print(statSamples);
