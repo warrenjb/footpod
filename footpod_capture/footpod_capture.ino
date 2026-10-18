@@ -267,7 +267,14 @@ void loop() {
     Serial.print("samples/s: ");
     Serial.print(statSamples);
     Serial.print("  notify fails: ");
-    Serial.println(statNotifyFail);
+    Serial.print(statNotifyFail);
+    Serial.print("  usb: ");
+    Serial.print(onUsbPower() ? "yes" : "no");
+    Serial.print("  connected: ");
+    Serial.print(Bluefruit.connected() ? "yes" : "no");
+    Serial.print("  still for: ");
+    Serial.print((ms - lastActivityMs) / 1000);
+    Serial.println(" s");
     statSamples = 0;
     statLastMs = ms;
   }
