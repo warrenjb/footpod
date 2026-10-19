@@ -66,6 +66,8 @@ select { width: auto; padding: 8px 10px; }
 .podchip { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .podchip .top { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: .9rem; }
 .podchip .st { font-size: .78rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.podchip .diag { font-size: .72rem; color: var(--muted); line-height: 1.35; min-height: 0; }
+.podchip .diag:empty { display: none; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.on { background: var(--accent); }
 .dot.retry { background: var(--warn); }

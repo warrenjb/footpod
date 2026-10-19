@@ -65,9 +65,21 @@ const uint8_t SVC_UUID[16] = {0x50,0x4c,0x3b,0x2f,0x1e,0x7d,0x3a,0x9c,
                               0x8e,0x4b,0x1d,0x5f,0x00,0x00,0xc4,0xa3};
 const uint8_t IMU_UUID[16] = {0x50,0x4c,0x3b,0x2f,0x1e,0x7d,0x3a,0x9c,
                               0x8e,0x4b,0x1d,0x5f,0x01,0x00,0xc4,0xa3};
+// Status: a3c40002-... (read + notify, 1/s) — lets the phone see the sleep timer on battery
+const uint8_t STAT_UUID[16] = {0x50,0x4c,0x3b,0x2f,0x1e,0x7d,0x3a,0x9c,
+                               0x8e,0x4b,0x1d,0x5f,0x02,0x00,0xc4,0xa3};
 
 BLEService        podSvc(SVC_UUID);
 BLECharacteristic imuChr(IMU_UUID);
+BLECharacteristic statChr(STAT_UUID);
+struct __attribute__((packed)) Stat {
+  uint32_t uptime_s;   // seconds since this boot
+  uint16_t still_s;    // seconds without movement
+  uint16_t limit_s;    // sleeps when still_s passes this (on battery)
+  uint8_t  flags;      // bit0 USB power, bit1 woke from sleep, bit2 page connected
+  uint8_t  version;
+};
+static bool wokeFromSleep = false;
 BLEDis            bledis;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
@@ -142,6 +154,11 @@ void setupBle() {
   imuChr.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   imuChr.setMaxLen(sizeof(Pkt));
   imuChr.begin();
+
+  statChr.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
+  statChr.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  statChr.setFixedLen(sizeof(Stat));
+  statChr.begin();
 
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
@@ -235,7 +252,7 @@ void maybeSleep(uint32_t ms) {
 
 void setup() {
   uint32_t resetReason = readResetReason();          // saved by the core at boot
-  bool wokeFromSleep = resetReason & POWER_RESETREAS_OFF_Msk;
+  wokeFromSleep = resetReason & POWER_RESETREAS_OFF_Msk;
 
   Serial.begin(115200);
   delay(500);
@@ -311,6 +328,15 @@ void loop() {
     Serial.print((Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS) / 1000);
     Serial.println(" s on battery)");
     statSamples = 0;
+
+    Stat st;
+    st.uptime_s = ms / 1000;
+    st.still_s  = (uint16_t)min((ms - lastActivityMs) / 1000, (uint32_t)65535);
+    st.limit_s  = (Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS) / 1000;
+    st.flags    = (onUsbPower() ? 1 : 0) | (wokeFromSleep ? 2 : 0) | (Bluefruit.connected() ? 4 : 0);
+    st.version  = 2;
+    statChr.write(&st, sizeof(st));
+    if (Bluefruit.connected() && statChr.notifyEnabled()) statChr.notify(&st, sizeof(st));
     statLastMs = ms;
   }
 }

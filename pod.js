@@ -3,6 +3,7 @@
 const FootPod = (() => {
   const SVC = 'a3c40000-5f1d-4b8e-9c3a-7d1e2f3b4c50';
   const CHR = 'a3c40001-5f1d-4b8e-9c3a-7d1e2f3b4c50';
+  const STAT = 'a3c40002-5f1d-4b8e-9c3a-7d1e2f3b4c50';   // sleep status, firmware v2+
   const PKT_LEN = 236;                       // 8-byte header + 19 samples x 12 bytes
   const ACC = 0.000488, GYR = 0.070;         // g/LSB (+-16 g), dps/LSB (+-2000 dps)
   const ACC_CLIP = 15.9, GYR_CLIP = 1990;
@@ -27,6 +28,7 @@ const FootPod = (() => {
       this.wantConnected = false; this.retryTimer = null;
       this.fs = 416; this.lastT0 = null; this.wrap = 0; this.lastSeq = null;
       this.lostTotal = 0; this.badLen = 0; this.clipCount = 0; this.rateCount = 0; this.lastRx = 0;
+      this.stat = null;   // {uptime, still, limit, usb, woke, connected} from the pod, if its firmware sends it
     }
     get connected() { return !!(this.device && this.device.gatt.connected); }
     get name() { return (this.device && this.device.name) || ('FootPod-' + this.side); }
@@ -54,6 +56,11 @@ const FootPod = (() => {
         this.chr._fpBound = true;
       }
       await this.chr.startNotifications();
+      try {
+        const sc = await svc.getCharacteristic(STAT);
+        if (!sc._fpBound) { sc.addEventListener('characteristicvaluechanged', e => this._onStat(e.target.value)); sc._fpBound = true; }
+        await sc.startNotifications();
+      } catch (e) { this.stat = null; }   // older firmware: no status
       this.lastSeq = null;
       this.status(this.name, 'on'); this.changed();
     }
@@ -75,6 +82,15 @@ const FootPod = (() => {
         catch (e) { this.retryTimer = setTimeout(attempt, 2000); }
       };
       this.retryTimer = setTimeout(attempt, 1000);
+    }
+
+    _onStat(dv) {
+      if (dv.byteLength < 10) return;
+      const f = dv.getUint8(8);
+      this.stat = { uptime: dv.getUint32(0, true), still: dv.getUint16(4, true), limit: dv.getUint16(6, true),
+                    usb: !!(f & 1), woke: !!(f & 2), connected: !!(f & 4) };
+      this.h.onStat && this.h.onStat(this);
+      if (this._diag) this._diag(this);
     }
 
     _onNotify(e) {
@@ -118,14 +134,23 @@ const FootPod = (() => {
       el.className = 'podchip';
       el.innerHTML = `<div class="top"><span class="swatch" style="background:var(--pod-${side})"></span>${side === 'L' ? 'Left' : 'Right'}</div>
         <div class="st"><span class="dot"></span><span class="tx">Not connected</span></div>
+        <div class="diag"></div>
         <button class="small disc" disabled>Disconnect</button>`;
       container.querySelector('.pods').appendChild(el);
       chips[side] = el;
       el.querySelector('.disc').onclick = () => pods[side].disconnect();
+      const fmt = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      pods[side]._diag = p => {
+        const st = p.stat, d = el.querySelector('.diag');
+        if (!st || !p.connected) { d.textContent = ''; return; }
+        d.textContent = st.usb ? `On USB, won't sleep · still ${fmt(st.still)}`
+          : `Still ${fmt(st.still)} of ${fmt(st.limit)} before sleep` + (st.woke ? ` · woke from sleep ${fmt(st.uptime)} ago` : '');
+      };
     }
     const refresh = () => {
       for (const side of ['L', 'R']) {
         const p = pods[side];
+        if (!p.connected) chips[side].querySelector('.diag').textContent = '';
         chips[side].querySelector('.disc').disabled = !p.connected && !p.wantConnected;
       }
       btn.disabled = !supported || (pods.L.connected && pods.R.connected);
@@ -148,5 +173,5 @@ const FootPod = (() => {
     return { refresh, setStatus };
   }
 
-  return { Pod, requestDevice, sideFromName, connectionUI, supported, SVC, CHR, PKT_LEN, ACC, GYR };
+  return { Pod, requestDevice, sideFromName, connectionUI, supported, SVC, CHR, STAT, PKT_LEN, ACC, GYR };
 })();
