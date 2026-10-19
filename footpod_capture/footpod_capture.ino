@@ -166,6 +166,7 @@ void ledsOff() {
 
 void goToSleep() {
   Serial.println("Going to sleep");
+  Bluefruit.autoConnLed(false);   // stop the library driving the blue LED (it gets the polarity wrong)
   pinMode(LED_RED, OUTPUT); pinMode(LED_GREEN, OUTPUT); pinMode(LED_BLUE, OUTPUT);
   for (int i = 0; i < 3; i++) {               // three purple blinks
     digitalWrite(LED_RED, LOW); digitalWrite(LED_BLUE, LOW); delay(150);
@@ -193,6 +194,11 @@ void goToSleep() {
     if (digitalRead(PIN_LSM6DS3TR_C_INT1) == LOW) break;
     delay(50);
   }
+
+  // LEDs off and undriven: pin states are kept in System OFF, so a driven-low
+  // LED pin would stay lit all night.
+  ledsOff();
+  pinMode(LED_RED, INPUT); pinMode(LED_GREEN, INPUT); pinMode(LED_BLUE, INPUT);
 
   // The IMU power pin keeps its state in System OFF, so the sensor stays on.
   // INT1 going HIGH wakes the board, which restarts from setup().
