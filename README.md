@@ -31,7 +31,8 @@ Put `footpod.html` on GitHub Pages next to the sit-up pages. Web Bluetooth needs
 
 - **Mounting check:** stand still for 3 s, then walk for 8 s. The page learns gyro offset, which way is up, and the foot's pitch axis, and remembers them per pod.
 - **Live view:** cadence, steps, sample rate, lost packets, clipping, and 5-second charts with detected strides marked.
-- **Record:** label the run, start, stop, then Download or Share the CSV (e.g. to Drive). The file is the same format as the laptop logger.
+- **Two pods:** tap Connect once per pod; each lands on its side from its name (FootPod-L / FootPod-R). The headline cadence uses both feet when both are live, otherwise it estimates from one.
+- **Record:** label the run, start, stop, then Download or Share. You get one CSV per connected pod (`..._L.csv`, `..._R.csv`), in the laptop logger's format plus an `rx_ms` column (phone clock at packet arrival) for lining up the two feet.
 
 Keep the screen on and the tab in front while recording.
 
