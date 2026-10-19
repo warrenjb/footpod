@@ -25,16 +25,16 @@ python footpod_logger.py --name FootPod-L --out walk1.csv
 
 Watch the live line: ~416 samples/s and 0 lost/bad packets. If you see bad packets, the MTU didn't negotiate up — tell me what OS/adapter you're on.
 
-### Or record from your phone
+### Or use the phone pages
 
-Put `footpod.html` on GitHub Pages next to the sit-up pages. Web Bluetooth needs HTTPS, which Pages provides. Open it in Chrome on Android, tap **Connect**, and pick FootPod-L.
+The site is at **https://warrenjb.github.io/footpod/**. Open it in Chrome on Android.
 
-- **Mounting check:** stand still for 3 s, then walk for 8 s. The page learns gyro offset, which way is up, and the foot's pitch axis, and remembers them per pod.
-- **Live view:** cadence, steps, sample rate, lost packets, clipping, and 5-second charts with detected strides marked.
-- **Two pods:** tap Connect once per pod; each lands on its side from its name (FootPod-L / FootPod-R). The headline cadence uses both feet when both are live, otherwise it estimates from one.
-- **Record:** label the run, start, stop, then Download or Share. You get one CSV per connected pod (`..._L.csv`, `..._R.csv`), in the laptop logger's format plus an `rx_ms` column (phone clock at packet arrival) for lining up the two feet.
+- **Home** (`index.html`) lets you pick Running, Leg lifts, or Dashboard.
+- **Running** (`run.html`) connects both pods (tap Connect once per pod) and shows live cadence for each foot and combined. It has a mounting check for each pod. Recording a run saves a summary to the dashboard: time, steps, cadence, and cadence every 5 s. It also gives you one raw CSV per foot, in the laptop logger's format plus an `rx_ms` phone-clock column.
+- **Leg lifts** (`legs.html`) counts lying, alternating, standing side, or hanging leg raises. Each foot's tilt is measured from where it was when you tapped Start. Lying and hanging raises count one rep for both legs; alternating and side raises count left and right separately. Thresholds can be tuned for each exercise, and "Suggest from last set" sets them from your own reps.
+- **Dashboard** (`dashboard.html`) shows runs (minutes per day, cadence per run, cadence during a run) and leg lifts (reps per day by exercise, left vs right), plus recent sessions with delete.
 
-Keep the screen on and the tab in front while recording.
+Data goes to the `situp-counter` Supabase project, in tables `footpod_runs` and `footpod_leg_lift_sets`. It uses the same login as the sit-up counter, and each user can only read or delete their own rows. If you're offline or signed out, saves wait on the phone and upload later. Shared code lives in `pod.js` (Bluetooth), `db.js` (Supabase), and `style.css`.
 
 ## 3. Check
 

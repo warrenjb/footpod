@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foot Pod Running</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .podhead { display: flex; align-items: center; gap: 8px; }
+  .podhead .meta { margin-left: auto; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; text-align: right; }
+  .podcard.off { display: none; }
+  .steps-list { margin: 0 0 12px; padding-left: 20px; color: var(--muted); font-size: .88rem; line-height: 1.5; }
+  .result { font-size: .88rem; line-height: 1.6; margin-top: 10px; }
+  #recLabel { margin-bottom: 10px; }
+  #recTimer { font-size: 2.4rem; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; margin: 6px 0 10px; }
+  #recTimer.live { color: var(--warn); }
+  .rec { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .rec .name { font-weight: 600; font-size: .9rem; word-break: break-all; }
+  .rec .meta { color: var(--muted); font-size: .8rem; margin: 2px 0 8px; line-height: 1.4; }
+  #unsupported { display: none; color: var(--warn); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+</head>
+<body>
+<header class="top"><a class="back" href="index.html">‹ Foot Pod</a><h1>Running</h1></header>
+
+<p id="unsupported" class="card">This browser doesn't support Web Bluetooth. Open this page in Chrome on Android or desktop.</p>
+
+<div class="card" id="connCard"></div>
+
+<div class="card">
+  <div class="big" id="cadence">–</div>
+  <div class="label" id="cadLabel">cadence, steps/min</div>
+  <div class="stats">
+    <div class="stat"><div class="v" id="cadL">–</div><div class="k">left foot, spm</div></div>
+    <div class="stat"><div class="v" id="cadR">–</div><div class="k">right foot, spm</div></div>
+    <div class="stat"><div class="v" id="steps">0</div><div class="k">steps</div></div>
+  </div>
+</div>
+
+<div id="podCards"></div>
+
+<div class="card">
+  <h2 style="margin-bottom:12px">Record a run</h2>
+  <label class="who-row"><span>Who's running</span><select id="person"></select></label>
+  <input type="text" id="recLabel" placeholder="Label, e.g. tm_6mph or track_400m" autocomplete="off">
+  <div id="recTimer">0:00</div>
+  <div class="row">
+    <button id="recBtn" class="primary" disabled>Start recording</button>
+  </div>
+  <p class="note">Stopping saves a summary (time, steps, cadence, cadence over time) to the dashboard and gives you one raw-data CSV per foot to download. Keep this tab open and the screen on; Chrome can stop receiving data if you switch apps or lock the phone.</p>
+  <div id="recList"></div>
+</div>
+
+<div class="card" id="acctCard"></div>
+
+<div class="overlay" id="countdown"><div class="num" id="cdNum">3</div><div class="what" id="cdWhat">Stand still</div></div>
+
+<template id="podTpl">
+  <div class="card podcard off">
+    <div class="podhead"><span class="swatch"></span><h2 class="ttl"></h2><span class="meta"></span></div>
+    <p class="note warn-text mtu" hidden>Packets are arriving split up — the Bluetooth MTU didn't negotiate. Disconnect and reconnect this pod.</p>
+    <div class="chart-title" style="margin-top:12px"><b>Acceleration</b><span>magnitude, g · last 5 s</span></div>
+    <canvas class="live acc"></canvas>
+    <div class="chart-title" style="margin-top:10px"><b>Foot pitch rate</b><span>deg/s · dots = detected strides</span></div>
+    <canvas class="live gyr"></canvas>
+    <h3>Mounting check</h3>
+    <ol class="steps-list">
+      <li>Clip the pod on your laces.</li>
+      <li>Stand still: tap the button and don't move for 3 seconds.</li>
+      <li>Walk: tap the button and walk normally for 8 seconds.</li>
+    </ol>
+    <div class="row">
+      <button class="still">1 · Stand still</button>
+      <button class="walk">2 · Walk</button>
+    </div>
+    <div class="result mres">Not calibrated.</div>
+    <div class="row" style="margin-top:10px"><button class="small clr">Clear calibration</button></div>
+  </div>
+</template>
+
+<script src="pod.js"></script>
+<script src="db.js"></script>
+<script>
+const WINDOW_S = 5, MIN_STRIDE_S = 0.4, MAX_GAP_S = 2.5, RING = 4096;
+const ACC = FootPod.ACC, GYR = FootPod.GYR;
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+function median(arr) {
+  if (!arr.length) return NaN;
+  const s = [...arr].sort((x, y) => x - y), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+const fmtDur = s => { s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const round1 = v => isNaN(v) ? null : Math.round(v * 10) / 10;
+
+// ---------- pods ----------
+let collector = null, rec = null, recordings = [], wakeLock = null;
+const handlers = {
+  onSample: (p, t, a, g) => processSample(p, t, a, g),
+  onPacket: (p, bytes, rx, lost) => {
+    if (!rec) return;
+    let r = rec.pods[p.side];
+    if (!r) r = rec.pods[p.side] = { name: p.name, packets: [], rx: [], lost: 0, strides: 0, intervals: [] };
+    r.lost += lost; r.packets.push(bytes); r.rx.push(rx);
+  },
+  onStatus: (p, text, cls) => conn && conn.setStatus(p, text, cls),
+  onChange: () => updateButtons(),
+  onMtu: p => { p.els.mtu.hidden = false; }
+};
+const pods = { L: new FootPod.Pod('L', handlers), R: new FootPod.Pod('R', handlers) };
+for (const p of Object.values(pods)) {
+  Object.assign(p, {
+    ring: { t: new Float64Array(RING), a: new Float32Array(RING), w: new Float32Array(RING), i: 0, n: 0 },
+    markers: [], mount: null, pendingStill: null,
+    ema1: [0, 0, 0], ema2: [0, 0, 0], posEnv: [0, 0, 0], negEnv: [0, 0, 0],
+    env: 0, above: false, pkV: 0, pkT: 0, lastStrideT: -1e9, intervals: [], strideCount: 0, els: {}
+  });
+}
+const conn = FootPod.connectionUI($('connCard'), pods, { beforeAttach: p => setTimeout(() => loadMount(p), 0) });
+if (!FootPod.supported) $('unsupported').style.display = 'block';
+
+for (const side of ['L', 'R']) {
+  const p = pods[side];
+  const card = $('podTpl').content.firstElementChild.cloneNode(true);
+  card.querySelector('.swatch').style.background = `var(--pod-${side})`;
+  card.querySelector('.ttl').textContent = side === 'L' ? 'Left pod' : 'Right pod';
+  $('podCards').appendChild(card);
+  p.els = {
+    card, meta: card.querySelector('.meta'), mtu: card.querySelector('.mtu'),
+    acc: card.querySelector('.acc'), gyr: card.querySelector('.gyr'),
+    still: card.querySelector('.still'), walk: card.querySelector('.walk'),
+    mres: card.querySelector('.mres'), clr: card.querySelector('.clr')
+  };
+  const who = side === 'L' ? 'Left' : 'Right';
+  p.els.still.onclick = () => startCollect(p, 'still', 3, `${who} pod: stand still`);
+  p.els.walk.onclick = () => startCollect(p, 'walk', 8, `${who} pod: walk normally`);
+  p.els.clr.onclick = () => {
+    p.mount = null; p.pendingStill = null;
+    try { localStorage.removeItem(mountKey(p)); } catch (e) {}
+    resetDetector(p); showMount(p); updateButtons();
+  };
+}
+
+function anyConnected() { return pods.L.connected || pods.R.connected; }
+
+function updateButtons() {
+  if (conn) conn.refresh();
+  for (const p of Object.values(pods)) {
+    if (!p.els.card) continue;
+    const c = p.connected;
+    p.els.card.classList.toggle('off', !c && !p.wantConnected);
+    p.els.still.disabled = !c || !!collector;
+    p.els.walk.disabled = !c || !!collector || !p.pendingStill;
+    p.els.clr.disabled = !p.mount;
+  }
+  $('recBtn').disabled = !anyConnected() && !rec;
+}
+
+// ---------- stride detection ----------
+function processSample(p, t, a, g) {
+  if (collector && collector.pod === p) collect(a, g);
+  const bias = p.mount ? p.mount.bias : [0, 0, 0];
+  const gb = [g[0] - bias[0], g[1] - bias[1], g[2] - bias[2]];
+  const alpha = 1 / (4 * p.fs), decay = Math.exp(-1 / (3 * p.fs));
+  for (let k = 0; k < 3; k++) {
+    p.ema1[k] += alpha * (gb[k] - p.ema1[k]);
+    p.ema2[k] += alpha * (gb[k] * gb[k] - p.ema2[k]);
+    p.posEnv[k] = Math.max(gb[k], p.posEnv[k] * decay);
+    p.negEnv[k] = Math.max(-gb[k], p.negEnv[k] * decay);
+  }
+  let axis, sign;
+  if (p.mount) { axis = p.mount.axis; sign = p.mount.sign; }
+  else {
+    axis = 0;
+    for (let k = 1; k < 3; k++) if (p.ema2[k] - p.ema1[k] ** 2 > p.ema2[axis] - p.ema1[axis] ** 2) axis = k;
+    sign = p.posEnv[axis] >= p.negEnv[axis] ? 1 : -1;
+  }
+  const w = sign * gb[axis];
+  const r = p.ring;
+  r.t[r.i] = t; r.a[r.i] = Math.hypot(a[0], a[1], a[2]); r.w[r.i] = w;
+  r.i = (r.i + 1) % RING; r.n = Math.min(r.n + 1, RING);
+
+  p.env = Math.max(w, p.env * decay);
+  const thr = Math.max(80, 0.5 * p.env);
+  if (!p.above) {
+    if (w > thr) { p.above = true; p.pkV = w; p.pkT = t; }
+  } else {
+    if (w > p.pkV) { p.pkV = w; p.pkT = t; }
+    if (w < thr * 0.6) {
+      p.above = false;
+      if (p.pkT - p.lastStrideT > MIN_STRIDE_S) registerStride(p, p.pkT, p.pkV);
+    }
+  }
+}
+
+function registerStride(p, t, w) {
+  const iv = t - p.lastStrideT;
+  const r = rec && rec.pods[p.side];
+  if (iv < MAX_GAP_S) {
+    p.intervals.push(iv);
+    if (p.intervals.length > 8) p.intervals.shift();
+    if (r) r.intervals.push(iv);
+  }
+  p.lastStrideT = t;
+  p.strideCount++;
+  if (r) r.strides++;
+  p.markers.push({ t, w });
+  if (p.markers.length > 40) p.markers.shift();
+}
+
+function resetDetector(p) { p.env = 0; p.above = false; p.lastStrideT = -1e9; p.intervals = []; p.markers = []; }
+
+function strideRate(p) {                   // strides/min for one foot, NaN if not striding now
+  if (!p.ring.n || p.intervals.length < 2 || !p.live) return NaN;
+  const tEnd = p.ring.t[(p.ring.i - 1 + RING) % RING];
+  if (tEnd - p.lastStrideT > MAX_GAP_S) return NaN;
+  return 60 / median(p.intervals.slice(-6));
+}
+
+function liveCadence() {
+  const rl = strideRate(pods.L), rr = strideRate(pods.R);
+  if (!isNaN(rl) && !isNaN(rr)) return { cad: rl + rr, rl, rr, src: 'both feet' };
+  if (!isNaN(rl)) return { cad: 2 * rl, rl, rr, src: 'from left foot' };
+  if (!isNaN(rr)) return { cad: 2 * rr, rl, rr, src: 'from right foot' };
+  return { cad: NaN, rl, rr, src: '' };
+}
+
+// ---------- mounting check ----------
+function collect(a, g) {
+  const c = collector, p = c.pod;
+  c.n++;
+  if (c.phase === 'still') {
+    for (let k = 0; k < 3; k++) { c.sa[k] += a[k]; c.sg[k] += g[k]; c.sg2[k] += g[k] * g[k]; }
+    const m = Math.hypot(a[0], a[1], a[2]); c.sm += m; c.sm2 += m * m;
+  } else {
+    for (let k = 0; k < 3; k++) c.g[k].push(g[k] - p.pendingStill.bias[k]);
+  }
+  if (c.n >= c.target) finishCollect();
+}
+
+function startCollect(p, phase, seconds, what) {
+  collector = phase === 'still'
+    ? { pod: p, phase, n: 0, target: Math.round(seconds * p.fs), sa: [0, 0, 0], sg: [0, 0, 0], sg2: [0, 0, 0], sm: 0, sm2: 0 }
+    : { pod: p, phase, n: 0, target: Math.round(seconds * p.fs), g: [[], [], []] };
+  updateButtons();
+  const cd = $('countdown');
+  cd.style.display = 'flex';
+  $('cdWhat').textContent = what;
+  const t0 = performance.now();
+  const tick = () => {
+    if (!collector) { cd.style.display = 'none'; return; }
+    $('cdNum').textContent = Math.ceil(Math.max(0, seconds - (performance.now() - t0) / 1000));
+    if (!p.connected) {
+      collector = null; cd.style.display = 'none';
+      p.els.mres.innerHTML = '<span class="bad">Lost connection — try again.</span>';
+      updateButtons(); return;
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function countStrides(arr, fs) {
+  let e = 0, ab = false, pv = 0, pi = 0, last = -1e9, count = 0;
+  const decay = Math.exp(-1 / (3 * fs));
+  arr.forEach((w, i) => {
+    e = Math.max(w, e * decay);
+    const thr = Math.max(80, 0.5 * e);
+    if (!ab) { if (w > thr) { ab = true; pv = w; pi = i; } }
+    else {
+      if (w > pv) { pv = w; pi = i; }
+      if (w < thr * 0.6) { ab = false; if ((pi - last) / fs > MIN_STRIDE_S) { count++; last = pi; } }
+    }
+  });
+  return count;
+}
+
+function finishCollect() {
+  const c = collector, p = c.pod;
+  collector = null;
+  $('countdown').style.display = 'none';
+  if (c.phase === 'still') {
+    const n = c.n;
+    const grav = c.sa.map(v => v / n), bias = c.sg.map(v => v / n);
+    const gStd = Math.max(...c.sg2.map((v, k) => Math.sqrt(Math.max(0, v / n - bias[k] ** 2))));
+    const mStd = Math.sqrt(Math.max(0, c.sm2 / n - (c.sm / n) ** 2));
+    if (gStd > 3 || mStd > 0.03) {
+      p.pendingStill = null;
+      p.els.mres.innerHTML = `<span class="bad">Too much movement</span> (gyro noise ${gStd.toFixed(1)} deg/s). Stand still and try again.`;
+    } else {
+      p.pendingStill = { bias, gravity: grav };
+      p.els.mres.innerHTML = `<span class="ok">Still reading OK.</span> ${describeGravity(grav)}<br>Gyro offset: ${bias.map(v => v.toFixed(2)).join(', ')} deg/s. Now tap <b>Walk</b>.`;
+    }
+  } else {
+    const vars = c.g.map(arr => {
+      const m = arr.reduce((s, v) => s + v, 0) / arr.length;
+      return arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length;
+    });
+    let axis = 0;
+    for (let k = 1; k < 3; k++) if (vars[k] > vars[axis]) axis = k;
+    const arr = c.g[axis];
+    const mx = Math.max(...arr), mn = Math.min(...arr);
+    const sign = mx >= -mn ? 1 : -1;
+    const strides = countStrides(arr.map(v => v * sign), p.fs);
+    if (strides < 3 || Math.max(mx, -mn) < 150) {
+      p.els.mres.innerHTML = `<span class="bad">Couldn't see clear strides</span> (found ${strides}). Walk at a normal pace for the full 8 seconds and try again.`;
+    } else {
+      p.mount = { ...p.pendingStill, axis, sign, date: new Date().toISOString(), device: p.name };
+      saveMount(p);
+      resetDetector(p);
+      showMount(p, strides);
+    }
+  }
+  updateButtons();
+}
+
+function describeGravity(g) {
+  let k = 0;
+  for (let j = 1; j < 3; j++) if (Math.abs(g[j]) > Math.abs(g[k])) k = j;
+  const tilt = Math.acos(Math.min(1, Math.abs(g[k]) / Math.hypot(...g))) * 180 / Math.PI;
+  return `Board ${g[k] >= 0 ? '+' : '−'}${'XYZ'[k]} faces up, tilted ${tilt.toFixed(0)}°.`;
+}
+
+function showMount(p, strides) {
+  if (!p.mount) { p.els.mres.textContent = 'Not calibrated — cadence uses an automatic axis guess until you run this.'; return; }
+  p.els.mres.innerHTML =
+    `<span class="ok">Calibrated</span>${strides ? ` — saw ${strides} strides` : ''}.<br>` +
+    `${describeGravity(p.mount.gravity)}<br>` +
+    `Pitch axis: ${p.mount.sign > 0 ? '+' : '−'}${'XYZ'[p.mount.axis]} gyro. Saved ${new Date(p.mount.date).toLocaleString()}.`;
+}
+
+const mountKey = p => 'footpod-mount-' + p.name;
+function saveMount(p) { try { localStorage.setItem(mountKey(p), JSON.stringify(p.mount)); } catch (e) {} }
+function loadMount(p) {
+  try { const s = localStorage.getItem(mountKey(p)); p.mount = s ? JSON.parse(s) : null; } catch (e) { p.mount = null; }
+  showMount(p); updateButtons();
+}
+
+// ---------- recording + saving ----------
+const getPerson = FootDB.personUI($('person'));
+FootDB.accountUI($('acctCard'), 'runs');
+
+$('recBtn').onclick = async () => {
+  if (!rec) {
+    rec = { start: Date.now(), pods: {}, series: [], label: ($('recLabel').value.trim() || 'run').replace(/[^\w.-]+/g, '_') };
+    rec.seriesTimer = setInterval(() => {
+      const c = liveCadence().cad;
+      rec.series.push([Math.round((Date.now() - rec.start) / 1000), isNaN(c) ? null : Math.round(c)]);
+    }, 5000);
+    $('recBtn').textContent = 'Stop recording';
+    $('recBtn').className = 'danger';
+    $('recTimer').classList.add('live');
+    $('person').disabled = true;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  } else {
+    finishRecording();
+  }
+  updateButtons();
+};
+
+document.addEventListener('visibilitychange', async () => {
+  if (rec && document.visibilityState === 'visible' && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+});
+
+function finishRecording() {
+  const r = rec;
+  rec = null;
+  clearInterval(r.seriesTimer);
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  $('recBtn').textContent = 'Start recording';
+  $('recBtn').className = 'primary';
+  $('recTimer').classList.remove('live');
+  $('person').disabled = false;
+  const sides = Object.keys(r.pods).filter(s => r.pods[s].packets.length).sort();
+  if (!sides.length) return;
+  const end = Date.now();
+  const d = new Date(r.start), pad = v => String(v).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const item = { label: r.label, stamp, seconds: (end - r.start) / 1000, files: [], saved: false, client_id: FootDB.uuid() };
+  const rate = {};
+  for (const s of sides) {
+    const pr = r.pods[s];
+    rate[s] = pr.intervals.length ? 60 / median(pr.intervals) : NaN;
+    item.files.push({ side: s, name: `${r.label}_${stamp}_${s}.csv`, blob: buildCsv(pr.packets, pr.rx),
+                      strides: pr.strides, lost: pr.lost, cadence: 2 * rate[s] });
+  }
+  const both = sides.length === 2;
+  const sL = r.pods.L ? r.pods.L.strides : 0, sR = r.pods.R ? r.pods.R.strides : 0;
+  item.steps = both ? sL + sR : 2 * (sL + sR);
+  const cad = both && !isNaN(rate.L) && !isNaN(rate.R) ? rate.L + rate.R
+            : 2 * (isNaN(rate.L) ? (rate.R || NaN) : rate.L);
+  item.row = {
+    client_id: item.client_id, person: getPerson(), label: r.label,
+    started_at: new Date(r.start).toISOString(), ended_at: new Date(end).toISOString(),
+    duration_s: Math.round(item.seconds), steps: item.steps,
+    cadence_spm: round1(cad),
+    cadence_left_spm: rate.L !== undefined ? round1(2 * rate.L) : null,
+    cadence_right_spm: rate.R !== undefined ? round1(2 * rate.R) : null,
+    pods: sides.map(s => r.pods[s].name),
+    cadence_series: r.series,
+    lost_packets: sides.reduce((t, s) => t + r.pods[s].lost, 0)
+  };
+  recordings.unshift(item);
+  renderRecordings();
+  if (item.seconds >= 10) FootDB.enqueue('footpod_runs', item.row);
+  else FootDB.markSync(item.client_id, 'Too short to save (under 10 s)');
+}
+
+function buildCsv(packets, rxs) {
+  const parts = ['t_us,seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,rx_ms\n'];
+  let lt = null, wr = 0;
+  packets.forEach((pk, j) => {
+    const dv = new DataView(pk.buffer);
+    const t0 = dv.getUint32(0, true), seq = dv.getUint16(4, true), n = dv.getUint8(6), od = dv.getUint8(7);
+    if (lt !== null && t0 < lt - 2 ** 31) wr += 2 ** 32;
+    lt = t0;
+    const dt = 1e6 / (od * 8), rx = rxs[j];
+    let s = '';
+    for (let i = 0; i < n; i++) {
+      const o = 8 + i * 12;
+      s += Math.round(t0 + wr + i * dt) + ',' + seq + ',' +
+        (dv.getInt16(o + 6, true) * ACC).toFixed(4) + ',' + (dv.getInt16(o + 8, true) * ACC).toFixed(4) + ',' +
+        (dv.getInt16(o + 10, true) * ACC).toFixed(4) + ',' + (dv.getInt16(o, true) * GYR).toFixed(2) + ',' +
+        (dv.getInt16(o + 2, true) * GYR).toFixed(2) + ',' + (dv.getInt16(o + 4, true) * GYR).toFixed(2) + ',' + rx + '\n';
+    }
+    parts.push(s);
+  });
+  return new Blob(parts, { type: 'text/csv' });
+}
+
+function download(f) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(f.blob);
+  a.download = f.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+function renderRecordings() {
+  const box = $('recList');
+  box.innerHTML = '';
+  recordings.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'rec';
+    const lines = item.files.map(f =>
+      `${f.side === 'L' ? 'Left' : 'Right'}: ${isNaN(f.cadence) ? '–' : Math.round(f.cadence)} spm, ${f.lost} lost packets, ${(f.blob.size / 1e6).toFixed(1)} MB`).join('<br>');
+    div.innerHTML = `<div class="name"></div>
+      <div class="meta">${fmtDur(item.seconds)} · ${item.steps} steps · cadence ${item.row.cadence_spm ?? '–'} spm · ${FootDB.syncBadge(item.client_id)}<br>${lines}</div>
+      <div class="row"><button class="small dl">Download CSV${item.files.length > 1 ? 's' : ''}</button><button class="small sh" hidden>Share</button></div>`;
+    div.querySelector('.name').textContent = `${item.label}_${item.stamp}`;
+    div.querySelector('.dl').onclick = () => {
+      item.files.forEach((f, i) => setTimeout(() => download(f), i * 400));
+      item.saved = true;
+    };
+    const files = item.files.map(f => new File([f.blob], f.name, { type: 'text/csv' }));
+    if (navigator.canShare && navigator.canShare({ files })) {
+      const sh = div.querySelector('.sh');
+      sh.hidden = false;
+      sh.onclick = async () => {
+        try { await navigator.share({ files, title: `${item.label}_${item.stamp}` }); item.saved = true; } catch (e) {}
+      };
+    }
+    box.appendChild(div);
+  });
+  FootDB.flush();
+}
+
+window.addEventListener('beforeunload', e => {
+  if (rec) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ---------- charts ----------
+function sizeCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, W: r.width, H: r.height };
+}
+
+function windowMax(p, key, tEnd, abs) {
+  const r = p.ring; let m = 0;
+  for (let j = 1; j <= r.n; j++) {
+    const idx = (r.i - j + RING) % RING;
+    if (r.t[idx] < tEnd - WINDOW_S) break;
+    const v = abs ? Math.abs(r[key][idx]) : r[key][idx];
+    if (v > m) m = v;
+  }
+  return m;
+}
+
+function drawChart(p, cv, key, tEnd, ymin, ymax, color, refs, withMarkers) {
+  const { ctx, W, H } = sizeCanvas(cv);
+  if (!W) return;
+  const padL = 34, padR = 4, padT = 6, padB = 6;
+  const pw = W - padL - padR, ph = H - padT - padB;
+  const x = t => padL + (t - (tEnd - WINDOW_S)) / WINDOW_S * pw;
+  const y = v => padT + (1 - (v - ymin) / (ymax - ymin)) * ph;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'right'; ctx.lineWidth = 1;
+  refs.forEach(v => {
+    ctx.strokeStyle = css('--grid');
+    ctx.beginPath(); ctx.moveTo(padL, y(v)); ctx.lineTo(W - padR, y(v)); ctx.stroke();
+    ctx.fillStyle = css('--muted'); ctx.fillText(String(v), padL - 6, y(v));
+  });
+  const r = p.ring;
+  if (!r.n) return;
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  let started = false;
+  for (let j = r.n; j >= 1; j--) {
+    const idx = (r.i - j + RING) % RING, t = r.t[idx];
+    if (t < tEnd - WINDOW_S) continue;
+    const v = Math.max(ymin, Math.min(ymax, r[key][idx]));
+    if (!started) { ctx.moveTo(x(t), y(v)); started = true; } else ctx.lineTo(x(t), y(v));
+  }
+  ctx.stroke();
+  if (withMarkers) {
+    p.markers.forEach(m => {
+      if (m.t < tEnd - WINDOW_S) return;
+      const cx = x(m.t), cy = y(Math.min(ymax, m.w));
+      ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fillStyle = css('--card'); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fillStyle = css('--text'); ctx.fill();
+    });
+  }
+}
+
+function frame() {
+  for (const p of Object.values(pods)) {
+    if (p.els.card.classList.contains('off')) continue;
+    const r = p.ring;
+    const tEnd = r.n ? r.t[(r.i - 1 + RING) % RING] : WINDOW_S;
+    const color = css(`--pod-${p.side}`);
+    const aTop = Math.max(4, Math.ceil(windowMax(p, 'a', tEnd, false)));
+    drawChart(p, p.els.acc, 'a', tEnd, 0, aTop, color, [0, 1, aTop], false);
+    const wTop = Math.max(400, Math.ceil(windowMax(p, 'w', tEnd, true) / 200) * 200);
+    drawChart(p, p.els.gyr, 'w', tEnd, -wTop, wTop, color, [-wTop, 0, wTop], true);
+  }
+  const lc = liveCadence();
+  $('cadL').textContent = isNaN(lc.rl) ? '–' : Math.round(2 * lc.rl);
+  $('cadR').textContent = isNaN(lc.rr) ? '–' : Math.round(2 * lc.rr);
+  $('cadence').textContent = isNaN(lc.cad) ? '–' : Math.round(lc.cad);
+  $('cadLabel').textContent = 'cadence, steps/min' + (lc.src ? ' · ' + lc.src : '');
+  const sL = pods.L.strideCount, sR = pods.R.strideCount;
+  $('steps').textContent = (sL && sR) ? sL + sR : 2 * (sL + sR);
+  if (rec) $('recTimer').textContent = fmtDur((Date.now() - rec.start) / 1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+setInterval(() => {
+  for (const p of Object.values(pods)) {
+    p.els.meta.textContent = p.connected ? `${p.rateCount} samples/s · ${p.lostTotal} lost · ${p.clipCount} clipped` : '';
+    p.rateCount = 0;
+  }
+}, 1000);
+
+for (const p of Object.values(pods)) showMount(p);
+updateButtons();
+</script>
+</body>
+</html>

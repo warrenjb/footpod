@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foot Pod Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  header.top { flex-wrap: wrap; }
+  header.top nav { display: flex; gap: 14px; font-size: .85rem; align-items: center; white-space: nowrap; flex-wrap: wrap; }
+  header.top nav a { color: var(--muted); }
+  .filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .filters button { flex: none; min-width: 0; padding: 8px 12px; font-size: .88rem; }
+  .filters button[aria-pressed="true"] { background: var(--text); color: var(--card); border-color: var(--text); }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+  .tabs button { padding: 12px; }
+  .tabs button[aria-selected="true"] { background: var(--text); color: var(--card); border-color: var(--text); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
+  .tile .k { color: var(--text-2); font-size: .8rem; }
+  .tile .v { font-size: 1.9rem; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .n { color: var(--muted); font-size: .75rem; margin-top: 2px; }
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 12px; }
+  @media (min-width: 760px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+  .grid2 .card { margin-bottom: 0; }
+  .sub { color: var(--muted); font-size: .8rem; margin: 2px 0 10px; }
+  .chart-box { position: relative; height: 240px; }
+  .lg { display: flex; gap: 14px; flex-wrap: wrap; font-size: .8rem; color: var(--text-2); margin-bottom: 8px; }
+  .lg span { display: inline-flex; align-items: center; gap: 6px; }
+  .row-between { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-top: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--text-2); font-weight: 600; font-size: .78rem; border-top: 0; }
+  td.num, th.num { text-align: right; }
+  td .del { flex: none; min-width: 0; padding: 4px 8px; font-size: .75rem; font-weight: 500; color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 32px 0; }
+  .signin { max-width: 420px; margin: 32px auto; }
+  #app { display: none; }
+  body:not(.everyone) .who-col { display: none; }
+  .tabpanel[hidden] { display: none; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"></script>
+</head>
+<body class="wide">
+<header class="top">
+  <h1>Foot Pod Dashboard</h1>
+  <nav><a href="index.html">Home</a><a href="run.html">Running</a><a href="legs.html">Leg lifts</a><a href="#" id="signOut" style="display:none">Sign out</a></nav>
+</header>
+
+<div class="card signin" id="signinCard" style="display:none"></div>
+
+<main id="app">
+  <div class="filters" role="group" aria-label="Date range">
+    <button data-days="7">7 days</button>
+    <button data-days="30" aria-pressed="true">30 days</button>
+    <button data-days="90">90 days</button>
+    <button data-days="0">All time</button>
+    <select id="personPick" aria-label="Person" style="margin-left:auto">
+      <option value="Warren">Warren</option><option value="Other">Other</option><option value="">Everyone</option>
+    </select>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tabRuns" aria-selected="true" aria-controls="runsPanel">Running</button>
+    <button role="tab" id="tabLegs" aria-selected="false" aria-controls="legsPanel">Leg lifts</button>
+  </div>
+
+  <section class="tabpanel" id="runsPanel" role="tabpanel">
+    <div class="tiles">
+      <div class="tile"><div class="k">Runs</div><div class="v" id="rCount">–</div><div class="n" id="rCountN"></div></div>
+      <div class="tile"><div class="k">Time running</div><div class="v" id="rTime">–</div><div class="n" id="rTimeN"></div></div>
+      <div class="tile"><div class="k">Steps</div><div class="v" id="rSteps">–</div><div class="n" id="rStepsN"></div></div>
+      <div class="tile"><div class="k">Avg cadence</div><div class="v" id="rCad">–</div><div class="n" id="rCadN"></div></div>
+    </div>
+    <div class="card empty" id="runsEmpty" style="display:none">No runs in this range. Record one on the Running page and it shows up here.</div>
+    <div id="runsCharts">
+      <div class="grid2">
+        <div class="card"><h2>Minutes run per day</h2><p class="sub">Total recorded time each day</p>
+          <div class="chart-box"><canvas id="minChart" aria-label="Minutes run per day bar chart"></canvas></div></div>
+        <div class="card"><h2>Cadence per run</h2><p class="sub">Steps per minute, each point is one run</p>
+          <div class="chart-box"><canvas id="cadChart" aria-label="Cadence per run line chart"></canvas></div></div>
+      </div>
+      <div class="card">
+        <div class="row-between"><div><h2>Cadence during a run</h2><p class="sub">Sampled every 5 seconds while recording</p></div>
+          <select id="runPick" aria-label="Choose a run"></select></div>
+        <div class="chart-box"><canvas id="runChart" aria-label="Cadence over time in one run"></canvas></div>
+      </div>
+      <div class="card"><h2>Recent runs</h2>
+        <div class="table-wrap"><table><thead><tr>
+          <th>When</th><th class="who-col">Who</th><th>Label</th><th class="num">Time</th><th class="num">Steps</th>
+          <th class="num">Cadence</th><th class="num">Left</th><th class="num">Right</th><th></th></tr></thead>
+          <tbody id="runRows"></tbody></table></div></div>
+    </div>
+  </section>
+
+  <section class="tabpanel" id="legsPanel" role="tabpanel" hidden>
+    <div class="tiles">
+      <div class="tile"><div class="k">Total reps</div><div class="v" id="lReps">–</div><div class="n" id="lRepsN"></div></div>
+      <div class="tile"><div class="k">Sets</div><div class="v" id="lSets">–</div><div class="n" id="lSetsN"></div></div>
+      <div class="tile"><div class="k">Best set (all time)</div><div class="v" id="lBest">–</div><div class="n" id="lBestN"></div></div>
+      <div class="tile"><div class="k">Left / right</div><div class="v" id="lBal">–</div><div class="n" id="lBalN"></div></div>
+    </div>
+    <div class="card empty" id="legsEmpty" style="display:none">No leg-lift sets in this range. Finish a set on the Leg lifts page and it shows up here.</div>
+    <div id="legsCharts">
+      <div class="grid2">
+        <div class="card"><h2>Reps per day</h2><p class="sub">By exercise</p>
+          <div class="lg" id="exLegend"></div>
+          <div class="chart-box"><canvas id="repsChart" aria-label="Leg-lift reps per day, stacked by exercise"></canvas></div></div>
+        <div class="card"><h2>Left vs right</h2><p class="sub">One-leg exercises (alternating, side raises)</p>
+          <div class="lg"><span><i class="swatch" style="background:var(--pod-L)"></i>Left</span><span><i class="swatch" style="background:var(--pod-R)"></i>Right</span></div>
+          <div class="chart-box"><canvas id="balChart" aria-label="Left and right reps per day"></canvas></div></div>
+      </div>
+      <div class="card"><h2>Recent sets</h2>
+        <div class="table-wrap"><table><thead><tr>
+          <th>When</th><th class="who-col">Who</th><th>Exercise</th><th class="num">Reps</th><th class="num">L / R</th>
+          <th class="num">Partials</th><th class="num">Time</th><th class="num">Pace</th><th></th></tr></thead>
+          <tbody id="legRows"></tbody></table></div></div>
+    </div>
+  </section>
+</main>
+
+<script src="db.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const EX = {
+  lying: 'Lying leg raises', alternating: 'Alternating raises', side: 'Side raises', hanging: 'Hanging raises'
+};
+const EX_ORDER = ['lying', 'alternating', 'side', 'hanging'];
+let rangeDays = 30, runsRaw = [], legsRaw = [], runs = [], legs = [];
+const charts = {};
+
+// ---------- helpers ----------
+const dayKey = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+const fmtDay = key => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+const fmtDur = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}` : `${m}:${String(ss).padStart(2, '0')}`; };
+const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const label = () => rangeDays ? `last ${rangeDays} days` : 'all time';
+
+function inRange(rows) {
+  if (!rangeDays) return rows;
+  const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (rangeDays - 1));
+  return rows.filter(r => new Date(r.started_at) >= start);
+}
+function dayList(rows) {
+  let start;
+  if (rangeDays) { start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (rangeDays - 1)); }
+  else { if (!rows.length) return []; start = new Date(rows[rows.length - 1].started_at); start.setHours(0, 0, 0, 0); }
+  const days = [], end = new Date(); end.setHours(0, 0, 0, 0);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) days.push(dayKey(d));
+  return days;
+}
+
+function baseOptions(yTitle, opts = {}) {
+  const ink2 = css('--text-2'), grid = css('--grid');
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: opts.mode || 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: css('--card'), titleColor: css('--text'), bodyColor: css('--text'),
+        borderColor: css('--line'), borderWidth: 1, padding: 10, displayColors: !!opts.swatches,
+        callbacks: opts.tooltip || {}
+      }
+    },
+    scales: {
+      x: { stacked: !!opts.stacked, grid: { display: false }, border: { color: css('--line') },
+           ticks: { color: ink2, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+           title: { display: !!opts.xTitle, text: opts.xTitle, color: ink2 } },
+      y: { stacked: !!opts.stacked, beginAtZero: opts.beginAtZero !== false, grid: { color: grid }, border: { display: false },
+           ticks: { color: ink2, precision: 0, maxTicksLimit: 6 },
+           title: { display: !!yTitle, text: yTitle, color: ink2 } }
+    }
+  };
+}
+function draw(id, config) { if (charts[id]) charts[id].destroy(); charts[id] = new Chart($(id), config); }
+const bar = (data, color, extra = {}) => Object.assign({
+  data, backgroundColor: color, borderColor: css('--card'), borderWidth: { top: 0, left: 1, right: 1, bottom: 2 },
+  borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28, categoryPercentage: .85, barPercentage: .9
+}, extra);
+
+// ---------- runs ----------
+function renderRuns() {
+  const rows = inRange(runs);
+  const time = rows.reduce((s, r) => s + r.duration_s, 0);
+  const steps = rows.reduce((s, r) => s + r.steps, 0);
+  const withCad = rows.filter(r => r.cadence_spm);
+  const cadW = withCad.reduce((s, r) => s + r.duration_s, 0);
+  const cad = cadW ? withCad.reduce((s, r) => s + Number(r.cadence_spm) * r.duration_s, 0) / cadW : NaN;
+  $('rCount').textContent = rows.length; $('rCountN').textContent = label();
+  $('rTime').textContent = rows.length ? fmtDur(time) : '–'; $('rTimeN').textContent = rows.length ? `${fmtDur(time / rows.length)} per run` : '';
+  $('rSteps').textContent = steps.toLocaleString(); $('rStepsN').textContent = label();
+  $('rCad').textContent = isNaN(cad) ? '–' : Math.round(cad); $('rCadN').textContent = isNaN(cad) ? '' : 'steps/min, weighted by time';
+
+  $('runsEmpty').style.display = rows.length ? 'none' : '';
+  $('runsCharts').style.display = rows.length ? '' : 'none';
+  if (!rows.length) return;
+
+  const days = dayList(rows), mins = {};
+  rows.forEach(r => { const k = dayKey(r.started_at); mins[k] = (mins[k] || 0) + r.duration_s / 60; });
+  draw('minChart', { type: 'bar',
+    data: { labels: days.map(fmtDay), datasets: [bar(days.map(k => Math.round((mins[k] || 0) * 10) / 10), css('--pod-L'))] },
+    options: baseOptions('minutes', { tooltip: { label: c => `${c.parsed.y} min` } }) });
+
+  const asc = rows.filter(r => r.cadence_spm).slice().reverse();
+  draw('cadChart', { type: 'line',
+    data: { labels: asc.map(r => fmtWhen(r.started_at)), datasets: [{
+      data: asc.map(r => Number(r.cadence_spm)), borderColor: css('--pod-L'), backgroundColor: css('--pod-L'),
+      borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBorderColor: css('--card'), pointBorderWidth: 2, tension: .2 }] },
+    options: baseOptions('steps/min', { beginAtZero: false, tooltip: {
+      label: c => { const r = asc[c.dataIndex]; return [`${Math.round(c.parsed.y)} spm`, `${fmtDur(r.duration_s)} · ${r.steps} steps`]; } } }) });
+
+  const sel = $('runPick'), prev = sel.value;
+  sel.innerHTML = rows.filter(r => Array.isArray(r.cadence_series) && r.cadence_series.length)
+    .map(r => `<option value="${r.id}">${fmtWhen(r.started_at)} · ${esc(r.label || 'run')} · ${fmtDur(r.duration_s)}</option>`).join('');
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  renderRunDetail();
+
+  $('runRows').innerHTML = rows.slice(0, 50).map(r => `<tr>
+    <td>${fmtWhen(r.started_at)}</td><td class="who-col">${esc(r.person)}</td><td>${esc(r.label || '')}</td>
+    <td class="num">${fmtDur(r.duration_s)}</td><td class="num">${r.steps.toLocaleString()}</td>
+    <td class="num">${r.cadence_spm ? Math.round(r.cadence_spm) : '–'}</td>
+    <td class="num">${r.cadence_left_spm ? Math.round(r.cadence_left_spm) : '–'}</td>
+    <td class="num">${r.cadence_right_spm ? Math.round(r.cadence_right_spm) : '–'}</td>
+    <td><button class="del" data-t="footpod_runs" data-id="${r.id}">Delete</button></td></tr>`).join('');
+}
+
+function renderRunDetail() {
+  const r = runs.find(x => String(x.id) === $('runPick').value);
+  if (!r) { if (charts.runChart) charts.runChart.destroy(); return; }
+  const pts = r.cadence_series;
+  draw('runChart', { type: 'line',
+    data: { labels: pts.map(p => fmtDur(p[0])), datasets: [{
+      data: pts.map(p => p[1]), borderColor: css('--pod-L'), borderWidth: 2, pointRadius: 0, pointHitRadius: 10,
+      tension: .25, spanGaps: false }] },
+    options: baseOptions('steps/min', { beginAtZero: false, xTitle: 'time into run',
+      tooltip: { label: c => c.parsed.y === null ? 'no strides' : `${c.parsed.y} spm` } }) });
+}
+$('runPick').addEventListener('change', renderRunDetail);
+
+// ---------- leg lifts ----------
+function renderLegs() {
+  const rows = inRange(legs);
+  const reps = rows.reduce((s, r) => s + r.reps, 0);
+  $('lReps').textContent = reps.toLocaleString(); $('lRepsN').textContent = label();
+  $('lSets').textContent = rows.length; $('lSetsN').textContent = rows.length ? `${(reps / rows.length).toFixed(1)} reps per set` : label();
+  const best = legs.reduce((b, s) => (!b || s.reps > b.reps ? s : b), null);
+  $('lBest').textContent = best ? best.reps : '–';
+  $('lBestN').textContent = best ? `${EX[best.exercise]}, ${fmtWhen(best.started_at)}` : '';
+  const one = rows.filter(r => r.reps_left !== null);
+  const L = one.reduce((s, r) => s + (r.reps_left || 0), 0), R = one.reduce((s, r) => s + (r.reps_right || 0), 0);
+  $('lBal').textContent = L + R ? `${L} / ${R}` : '–';
+  $('lBalN').textContent = L + R ? `${Math.round(100 * L / (L + R))}% left, one-leg exercises` : 'no one-leg sets';
+
+  $('legsEmpty').style.display = rows.length ? 'none' : '';
+  $('legsCharts').style.display = rows.length ? '' : 'none';
+  if (!rows.length) return;
+
+  const days = dayList(rows);
+  const used = EX_ORDER.filter(e => rows.some(r => r.exercise === e));
+  const by = {};
+  rows.forEach(r => { const k = dayKey(r.started_at); by[r.exercise] = by[r.exercise] || {}; by[r.exercise][k] = (by[r.exercise][k] || 0) + r.reps; });
+  $('exLegend').innerHTML = used.map(e => `<span><i class="swatch" style="background:var(--ex-${e})"></i>${EX[e]}</span>`).join('');
+  draw('repsChart', { type: 'bar',
+    data: { labels: days.map(fmtDay), datasets: used.map((e, i) => bar(days.map(k => by[e][k] || 0), css('--ex-' + e),
+      { label: EX[e], borderRadius: i === used.length - 1 ? 4 : 0, borderSkipped: 'start' })) },
+    options: baseOptions('reps', { stacked: true, swatches: true,
+      tooltip: { label: c => c.parsed.y ? `${c.dataset.label}: ${c.parsed.y}` : null } }) });
+
+  const bl = {}, br = {};
+  one.forEach(r => { const k = dayKey(r.started_at); bl[k] = (bl[k] || 0) + (r.reps_left || 0); br[k] = (br[k] || 0) + (r.reps_right || 0); });
+  draw('balChart', { type: 'bar',
+    data: { labels: days.map(fmtDay), datasets: [
+      bar(days.map(k => bl[k] || 0), css('--pod-L'), { label: 'Left' }),
+      bar(days.map(k => br[k] || 0), css('--pod-R'), { label: 'Right' })] },
+    options: baseOptions('reps', { swatches: true, tooltip: { label: c => `${c.dataset.label}: ${c.parsed.y}` } }) });
+
+  $('legRows').innerHTML = rows.slice(0, 50).map(r => `<tr>
+    <td>${fmtWhen(r.started_at)}</td><td class="who-col">${esc(r.person)}</td>
+    <td><i class="swatch" style="background:var(--ex-${r.exercise})"></i> ${EX[r.exercise]}</td>
+    <td class="num">${r.reps}</td><td class="num">${r.reps_left !== null ? `${r.reps_left} / ${r.reps_right}` : '–'}</td>
+    <td class="num">${r.partials}</td><td class="num">${fmtDur(r.duration_ms / 1000)}</td>
+    <td class="num">${r.avg_pace_s ? Number(r.avg_pace_s).toFixed(1) + 's' : '–'}</td>
+    <td><button class="del" data-t="footpod_leg_lift_sets" data-id="${r.id}">Delete</button></td></tr>`).join('');
+}
+
+// ---------- filters, tabs, data ----------
+function applyPerson() {
+  const p = $('personPick').value;
+  document.body.classList.toggle('everyone', !p);
+  runs = p ? runsRaw.filter(r => r.person === p) : runsRaw.slice();
+  legs = p ? legsRaw.filter(r => r.person === p) : legsRaw.slice();
+}
+function renderAll() { applyPerson(); if ($('runsPanel').hidden) renderLegs(); else renderRuns(); }
+
+document.querySelectorAll('.filters button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.filters button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  rangeDays = +b.dataset.days; renderAll();
+});
+$('personPick').value = FootDB.load('footpod_dash_person', 'Warren');
+$('personPick').onchange = () => { FootDB.store('footpod_dash_person', $('personPick').value); renderAll(); };
+
+function selectTab(which) {
+  const runsOn = which === 'runs';
+  $('tabRuns').setAttribute('aria-selected', runsOn); $('tabLegs').setAttribute('aria-selected', !runsOn);
+  $('runsPanel').hidden = !runsOn; $('legsPanel').hidden = runsOn;
+  FootDB.store('footpod_dash_tab', which);
+  renderAll();
+}
+$('tabRuns').onclick = () => selectTab('runs');
+$('tabLegs').onclick = () => selectTab('legs');
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('button.del');
+  if (!b || !FootDB.sb) return;
+  if (!confirm('Delete this entry? This cannot be undone.')) return;
+  b.disabled = true;
+  const { error } = await FootDB.sb.from(b.dataset.t).delete().eq('id', b.dataset.id);
+  if (error) { alert('Delete failed: ' + error.message); b.disabled = false; return; }
+  if (b.dataset.t === 'footpod_runs') runsRaw = runsRaw.filter(r => String(r.id) !== b.dataset.id);
+  else legsRaw = legsRaw.filter(r => String(r.id) !== b.dataset.id);
+  renderAll();
+});
+
+async function load() {
+  const [a, b] = await Promise.all([
+    FootDB.sb.from('footpod_runs').select('*').order('started_at', { ascending: false }).limit(2000),
+    FootDB.sb.from('footpod_leg_lift_sets').select('*').order('started_at', { ascending: false }).limit(2000)
+  ]);
+  if (a.error || b.error) { alert('Could not load data: ' + (a.error || b.error).message); return; }
+  runsRaw = a.data; legsRaw = b.data;
+  selectTab(FootDB.load('footpod_dash_tab', 'runs'));
+}
+
+FootDB.accountUI($('signinCard'), 'workouts');
+$('signOut').onclick = e => { e.preventDefault(); FootDB.sb && FootDB.sb.auth.signOut(); };
+FootDB.onAuth(user => {
+  $('signinCard').style.display = user ? 'none' : '';
+  $('app').style.display = user ? 'block' : 'none';
+  $('signOut').style.display = user ? '' : 'none';
+  if (user) load();
+});
+if (!FootDB.sb) $('signinCard').style.display = '';
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (FootDB.user) renderAll(); });
+</script>
+</body>
+</html>

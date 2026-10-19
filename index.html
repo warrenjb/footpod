@@ -1,4 +1,66 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foot Pod</title><meta http-equiv="refresh" content="0; url=footpod.html"></head>
-<body><a href="footpod.html">Open the Foot Pod page</a></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foot Pod</title>
+<meta name="description" content="Homemade shoe-mounted motion pods: running cadence, leg-lift counting, and a workout dashboard.">
+<link rel="stylesheet" href="style.css">
+<style>
+  .hero { padding: 8px 4px 20px; }
+  .hero h1 { font-size: 1.6rem; margin-bottom: 6px; }
+  .hero p { color: var(--text-2); line-height: 1.5; margin: 0; }
+  .tiles { display: grid; gap: 12px; }
+  a.tile {
+    display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 14px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 18px;
+    color: var(--text); text-decoration: none;
+  }
+  a.tile:active { transform: scale(.99); }
+  a.tile .ic { width: 56px; height: 56px; border-radius: 14px; display: grid; place-items: center; background: var(--bg); }
+  a.tile .ic svg { width: 30px; height: 30px; stroke: var(--text); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  a.tile b { font-size: 1.1rem; display: block; margin-bottom: 3px; }
+  a.tile span { color: var(--muted); font-size: .88rem; line-height: 1.4; }
+  a.tile .go { color: var(--muted); font-size: 1.4rem; }
+  .how { margin-top: 20px; }
+  .how ol { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); font-size: .9rem; line-height: 1.6; }
+  footer { color: var(--muted); font-size: .8rem; text-align: center; margin: 24px 0 8px; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="hero">
+  <h1>Foot Pod</h1>
+  <p>Two motion sensors clipped to your shoelaces. Pick what you're doing.</p>
+</div>
+
+<div class="tiles">
+  <a class="tile" href="run.html">
+    <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="14" cy="4.5" r="2"/><path d="M8 21l3-6 3 2v4"/><path d="M6 12l3-4 4 1 3 4h3"/><path d="M11 15l2-6"/></svg></div>
+    <div><b>Running</b><span>Live cadence from both feet, record runs, save them to the dashboard.</span></div>
+    <div class="go">›</div>
+  </a>
+  <a class="tile" href="legs.html">
+    <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19h18"/><circle cx="5.5" cy="15.5" r="1.8"/><path d="M7.5 16.5h5l7-9"/><path d="M12.5 16.5l5-7"/></svg></div>
+    <div><b>Leg lifts</b><span>Count lying, alternating, side or hanging leg raises, left and right.</span></div>
+    <div class="go">›</div>
+  </a>
+  <a class="tile" href="dashboard.html">
+    <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
+    <div><b>Dashboard</b><span>Runs and leg-lift sets over time, per-foot balance, recent sessions.</span></div>
+    <div class="go">›</div>
+  </a>
+</div>
+
+<div class="card how">
+  <h2>Before you start</h2>
+  <ol>
+    <li>Tap or pick up each pod to wake it. Blue blinking means it's ready.</li>
+    <li>Use Chrome on Android. Connect each pod once per page.</li>
+    <li>Sign in on any page to save. It's the same login as the sit-up counter.</li>
+  </ol>
+</div>
+
+<footer>Pods fall asleep after 5 minutes without movement. · <a href="https://github.com/warrenjb/footpod">Source</a></footer>
+</body>
+</html>

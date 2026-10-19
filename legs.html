@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foot Pod Leg Lifts</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .ex-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .ex-grid label {
+    border: 1px solid var(--line); border-radius: 12px; padding: 10px; font-size: .88rem; font-weight: 600;
+    display: flex; align-items: center; gap: 8px; cursor: pointer; min-height: 52px;
+  }
+  .ex-grid input { accent-color: var(--text); width: 18px; height: 18px; margin: 0; flex: none; }
+  .ex-grid label:has(input:checked) { border-color: var(--text); background: var(--bg); }
+  .ex-grid label:has(input:disabled) { opacity: .5; cursor: default; }
+  #exHint { margin-top: 10px; }
+  #setTime { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 6px; font-size: .9rem; }
+  #count.bump { color: var(--accent); }
+  #count { transition: color .15s; }
+  .gauge { margin-top: 12px; }
+  .gauge .hd { display: flex; justify-content: space-between; font-size: .8rem; color: var(--muted); margin-bottom: 4px; }
+  .gauge .hd b { color: var(--text); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .gauge .bar { position: relative; height: 14px; border-radius: 7px; background: var(--grid); overflow: hidden; }
+  .gauge .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 7px; }
+  .gauge .mk { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--muted); }
+  .gauge .mk.up { background: var(--text); }
+  .legend .lm { display: inline-block; width: 2px; height: 12px; background: var(--muted); margin-right: 6px; vertical-align: -2px; }
+  .legend .lm.up { background: var(--text); }
+  .legend { display: flex; gap: 14px; font-size: .75rem; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
+  details summary { cursor: pointer; font-weight: 600; font-size: .95rem; }
+  .slider { display: grid; grid-template-columns: 70px 1fr 44px; align-items: center; gap: 8px; margin-top: 10px; font-size: .88rem; }
+  .slider input { width: 100%; accent-color: var(--text); }
+  .slider span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  #tuneMsg { font-size: .85rem; color: var(--muted); min-height: 1.2em; margin-top: 8px; }
+  #tuneMsg.bad { color: var(--warn); }
+  .set { border-top: 1px solid var(--line); padding: 10px 0 0; margin-top: 10px; font-size: .88rem; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .set .n { font-weight: 600; }
+  .set .d { color: var(--muted); }
+  label.toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .9rem; margin-top: 12px; }
+  #unsupported { display: none; color: var(--warn); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+</head>
+<body>
+<header class="top"><a class="back" href="index.html">‹ Foot Pod</a><h1>Leg lifts</h1></header>
+
+<p id="unsupported" class="card">This browser doesn't support Web Bluetooth. Open this page in Chrome on Android or desktop.</p>
+
+<div class="card">
+  <h2 style="margin-bottom:10px">Exercise</h2>
+  <div class="ex-grid" id="exGrid"></div>
+  <p class="note" id="exHint"></p>
+</div>
+
+<div class="card" id="connCard"></div>
+
+<div class="card">
+  <div class="big" id="count">0</div>
+  <div class="label" id="countLabel">reps</div>
+  <div id="setTime">Ready</div>
+  <div class="stats" id="statsRow"></div>
+  <div id="gauges"></div>
+  <div class="legend"><span><i class="lm"></i>Down · Partial</span><span><i class="lm up"></i>Up</span></div>
+</div>
+
+<div class="card">
+  <label class="who-row"><span>Who's working out</span><select id="person"></select></label>
+  <button id="startBtn" class="primary" style="width:100%" disabled>Start set</button>
+  <label class="toggle"><input type="checkbox" id="speak"> Say each count out loud</label>
+</div>
+
+<div class="card">
+  <details id="tune">
+    <summary>Tune counting for this exercise</summary>
+    <p class="note">A rep counts when a leg rises past <b>Up</b> and comes back below <b>Down</b>. Rising past <b>Partial</b> without reaching Up counts as a partial. Angles are measured from where your feet were when you tapped Start.</p>
+    <div class="slider"><span>Up</span><input type="range" id="upR" min="10" max="100" step="1"><span id="upV"></span></div>
+    <div class="slider"><span>Partial</span><input type="range" id="partialR" min="5" max="90" step="1"><span id="partialV"></span></div>
+    <div class="slider"><span>Down</span><input type="range" id="downR" min="3" max="60" step="1"><span id="downV"></span></div>
+    <div class="row" style="margin-top:12px">
+      <button class="small" id="suggestBtn" disabled>Suggest from last set</button>
+      <button class="small" id="defaultsBtn">Reset to defaults</button>
+    </div>
+    <div id="tuneMsg"></div>
+  </details>
+</div>
+
+<div class="card" id="setsCard">
+  <h2>Sets this session</h2>
+  <div id="sets"><p class="note">No sets yet.</p></div>
+</div>
+
+<div class="card" id="acctCard"></div>
+
+<div class="overlay" id="countdown"><div class="num" id="cdNum">3</div><div class="what" id="cdWhat">Get into position</div></div>
+
+<script src="pod.js"></script>
+<script src="db.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const fmtDur = s => { s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+function median(arr) {
+  if (!arr.length) return NaN;
+  const s = [...arr].sort((x, y) => x - y), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+const EXERCISES = {
+  lying:       { name: 'Lying leg raises',       mode: 'together', max: 100, start: 'Lie flat, legs down',
+                 hint: 'On your back, legs straight. Raise both legs toward vertical, then lower. One rep for both legs.',
+                 def: { up: 60, partial: 35, down: 15 } },
+  alternating: { name: 'Alternating leg raises', mode: 'perleg',   max: 100, start: 'Lie flat, legs down',
+                 hint: 'On your back. Raise one straight leg and lower it, then the other. Left and right are counted separately.',
+                 def: { up: 50, partial: 30, down: 12 } },
+  side:        { name: 'Standing side raises',   mode: 'perleg',   max: 60,  start: 'Stand still, feet down',
+                 hint: 'Standing. Lift one leg out to the side and lower it. Left and right are counted separately.',
+                 def: { up: 25, partial: 15, down: 7 } },
+  hanging:     { name: 'Hanging leg raises',     mode: 'together', max: 100, start: 'Hang still, legs down',
+                 hint: 'Hanging from a bar. Raise both legs, then lower. One rep for both legs.',
+                 def: { up: 60, partial: 35, down: 15 } }
+};
+const MIN_REP_S = 0.6;
+const LP_TAU = 0.08;           // s, smoothing for the gravity direction
+const START_GAP = 5;           // deg above Down that starts a rep attempt
+
+// ---------- exercise picker ----------
+let exKey = FootDB.load('footpod_legs_exercise', 'lying');
+if (!EXERCISES[exKey]) exKey = 'lying';
+$('exGrid').innerHTML = Object.entries(EXERCISES).map(([k, e]) =>
+  `<label><input type="radio" name="ex" value="${k}"${k === exKey ? ' checked' : ''}>${e.name}</label>`).join('');
+$('exGrid').addEventListener('change', e => {
+  exKey = e.target.value;
+  FootDB.store('footpod_legs_exercise', exKey);
+  applyExercise();
+});
+const ex = () => EXERCISES[exKey];
+
+// ---------- thresholds ----------
+const thrKey = () => 'footpod_legs_thr_' + exKey;
+let thr = null;
+function loadThr() { thr = Object.assign({}, ex().def, FootDB.load(thrKey(), {})); }
+function validThr(v) { return v.down >= 3 && v.partial >= v.down + 5 && v.up >= v.partial + 5; }
+function showThr() {
+  for (const k of ['up', 'partial', 'down']) {
+    $(k + 'R').max = ex().max; $(k + 'R').value = thr[k]; $(k + 'V').textContent = thr[k] + '°';
+  }
+  drawGauges(true);
+}
+['upR', 'partialR', 'downR'].forEach(id => $(id).addEventListener('input', () => {
+  const v = { up: +$('upR').value, partial: +$('partialR').value, down: +$('downR').value };
+  for (const k of ['up', 'partial', 'down']) $(k + 'V').textContent = v[k] + '°';
+  if (!validThr(v)) { $('tuneMsg').textContent = 'Keep Down < Partial < Up, at least 5° apart.'; $('tuneMsg').className = 'bad'; return; }
+  thr = v; FootDB.store(thrKey(), thr);
+  $('tuneMsg').textContent = 'Saved on this phone.'; $('tuneMsg').className = '';
+  drawGauges(true);
+}));
+$('defaultsBtn').onclick = () => {
+  thr = Object.assign({}, ex().def);
+  try { localStorage.removeItem(thrKey()); } catch (_) {}
+  showThr(); $('tuneMsg').textContent = 'Back to defaults.'; $('tuneMsg').className = '';
+};
+$('suggestBtn').onclick = () => {
+  const peaks = lastSetPeaks[exKey] || [];
+  if (peaks.length < 3) { $('tuneMsg').textContent = 'Do a set with at least 3 reps first.'; $('tuneMsg').className = 'bad'; return; }
+  const m = median(peaks);
+  const v = { up: Math.round(0.8 * m), partial: Math.round(0.5 * m), down: Math.max(3, Math.round(0.2 * m)) };
+  if (!validThr(v)) { $('tuneMsg').textContent = `Your reps only reached about ${Math.round(m)}°, too small to tune from.`; $('tuneMsg').className = 'bad'; return; }
+  thr = v; FootDB.store(thrKey(), thr); showThr();
+  $('tuneMsg').textContent = `Set from your last set (typical top ${Math.round(m)}°).`; $('tuneMsg').className = '';
+};
+let lastSetPeaks = {};
+
+// ---------- pods ----------
+const handlers = {
+  onSample: (p, t, a) => onSample(p, a),
+  onStatus: (p, text, cls) => conn && conn.setStatus(p, text, cls),
+  onChange: () => updateButtons()
+};
+const pods = { L: new FootPod.Pod('L', handlers), R: new FootPod.Pod('R', handlers) };
+for (const p of Object.values(pods)) Object.assign(p, { lp: null, ref: null, angle: NaN, cap: null });
+const conn = FootPod.connectionUI($('connCard'), pods);
+if (!FootPod.supported) $('unsupported').style.display = 'block';
+
+function onSample(p, a) {
+  const k = 1 - Math.exp(-1 / (p.fs * LP_TAU));
+  if (!p.lp) p.lp = a.slice();
+  for (let i = 0; i < 3; i++) p.lp[i] += k * (a[i] - p.lp[i]);
+  if (p.cap) {
+    p.cap.n++;
+    for (let i = 0; i < 3; i++) p.cap.s[i] += a[i];
+    const m = Math.hypot(...a); p.cap.m += m; p.cap.m2 += m * m;
+  }
+  if (p.ref) {
+    const d = p.lp[0] * p.ref[0] + p.lp[1] * p.ref[1] + p.lp[2] * p.ref[2];
+    const c = d / (Math.hypot(...p.lp) * Math.hypot(...p.ref));
+    p.angle = Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI;
+  }
+  if (armed) updateChannels(p);
+}
+
+// ---------- counting ----------
+let armed = false, starting = false, set = null, wakeLock = null;
+function newChannel(id) { return { id, state: 'down', peak: 0, reached: false, reps: 0, partials: 0, lastRepT: -1e9, peaks: [] }; }
+
+function channelAngle(ch) {
+  if (ch.id !== 'both') return pods[ch.id].live && pods[ch.id].ref ? pods[ch.id].angle : NaN;
+  const live = Object.values(pods).filter(p => p.live && p.ref && !isNaN(p.angle));
+  return live.length ? live.reduce((s, p) => s + p.angle, 0) / live.length : NaN;
+}
+
+function updateChannels(p) {
+  for (const ch of set.channels) {
+    if (ch.id !== 'both' && ch.id !== p.side) continue;
+    const ang = channelAngle(ch);
+    if (isNaN(ang)) continue;
+    const now = performance.now() / 1000;
+    if (ch.state === 'down') {
+      if (ang > thr.down + START_GAP) { ch.state = 'up'; ch.peak = ang; ch.reached = false; }
+    } else {
+      if (ang > ch.peak) ch.peak = ang;
+      if (ang >= thr.up) ch.reached = true;
+      if (ang < thr.down) {
+        if (ch.reached && now - ch.lastRepT >= MIN_REP_S) {
+          ch.reps++; ch.lastRepT = now; ch.peaks.push(ch.peak);
+          set.repTimes.push(Date.now());
+          onRep(ch);
+        } else if (!ch.reached && ch.peak >= thr.partial) {
+          ch.partials++;
+        }
+        ch.state = 'down';
+      }
+    }
+  }
+}
+
+function totals() {
+  const reps = set ? set.channels.reduce((s, c) => s + c.reps, 0) : 0;
+  const partials = set ? set.channels.reduce((s, c) => s + c.partials, 0) : 0;
+  return { reps, partials };
+}
+
+function onRep(ch) {
+  const { reps } = totals();
+  const el = $('count');
+  el.textContent = reps;
+  el.classList.add('bump'); setTimeout(() => el.classList.remove('bump'), 250);
+  if ($('speak').checked && window.speechSynthesis) {
+    const u = new SpeechSynthesisUtterance(String(reps));
+    u.rate = 1.2; speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }
+  renderStats();
+}
+
+// ---------- start / stop ----------
+$('startBtn').onclick = () => { if (armed) stopSet(); else startSet(); };
+
+function startSet() {
+  const live = Object.values(pods).filter(p => p.live);
+  if (!live.length) return;
+  starting = true; updateButtons();
+  const cd = $('countdown');
+  cd.style.display = 'flex';
+  $('cdWhat').textContent = ex().start;
+  let n = 3;
+  $('cdNum').textContent = n;
+  const timer = setInterval(() => {
+    n--;
+    if (n > 0) { $('cdNum').textContent = n; return; }
+    clearInterval(timer);
+    $('cdNum').textContent = '…'; $('cdWhat').textContent = 'Hold still';
+    live.forEach(p => { p.cap = { n: 0, s: [0, 0, 0], m: 0, m2: 0 }; });
+    setTimeout(() => finishStart(live), 800);
+  }, 1000);
+}
+
+async function finishStart(live) {
+  $('countdown').style.display = 'none';
+  starting = false;
+  const moved = [];
+  for (const p of live) {
+    const c = p.cap; p.cap = null;
+    if (!c || c.n < 50) continue;
+    p.ref = c.s.map(v => v / c.n);
+    p.lp = p.ref.slice();
+    const sd = Math.sqrt(Math.max(0, c.m2 / c.n - (c.m / c.n) ** 2));
+    if (sd > 0.06) moved.push(p.side === 'L' ? 'left' : 'right');
+  }
+  const used = live.filter(p => p.ref);
+  if (!used.length) { updateButtons(); return; }
+  const channels = ex().mode === 'together' ? [newChannel('both')] : used.map(p => newChannel(p.side));
+  set = { exercise: exKey, start: Date.now(), channels, repTimes: [], pods: used.map(p => p.name),
+          thr: Object.assign({}, thr), person: getPerson(), moved };
+  armed = true;
+  $('count').textContent = '0';
+  renderStats();
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+  updateButtons();
+}
+
+function stopSet() {
+  armed = false;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  const s = set, end = Date.now();
+  const { reps, partials } = totals();
+  const gaps = s.repTimes.slice(1).map((t, i) => t - s.repTimes[i]);
+  const ch = id => s.channels.find(c => c.id === id);
+  lastSetPeaks[s.exercise] = s.channels.flatMap(c => c.peaks);
+  const row = {
+    client_id: FootDB.uuid(), person: s.person, exercise: s.exercise,
+    started_at: new Date(s.start).toISOString(), ended_at: new Date(end).toISOString(),
+    duration_ms: end - s.start, reps, partials,
+    reps_left: EXERCISES[s.exercise].mode === 'perleg' ? (ch('L') ? ch('L').reps : 0) : null,
+    reps_right: EXERCISES[s.exercise].mode === 'perleg' ? (ch('R') ? ch('R').reps : 0) : null,
+    avg_pace_s: gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length / 100) / 10 : null,
+    rep_times_ms: gaps, up_deg: s.thr.up, down_deg: s.thr.down, partial_deg: s.thr.partial, pods: s.pods
+  };
+  doneSets.unshift(row);
+  renderSets();
+  if (reps > 0 || partials > 0) FootDB.enqueue('footpod_leg_lift_sets', row);
+  else FootDB.markSync(row.client_id, 'Empty set, not saved');
+  updateButtons();
+}
+
+// ---------- display ----------
+let doneSets = [];
+function renderStats() {
+  const perleg = ex().mode === 'perleg';
+  const { partials } = totals();
+  let cells;
+  if (perleg) {
+    const r = id => { const c = set && set.channels.find(c => c.id === id); return c ? c.reps : '–'; };
+    cells = [[r('L'), 'left leg'], [r('R'), 'right leg'], [partials, 'partials']];
+  } else {
+    const t = set ? set.repTimes : [];
+    const gaps = t.slice(1).map((v, i) => (v - t[i]) / 1000);
+    cells = [[partials, 'partials'],
+             [gaps.length ? gaps[gaps.length - 1].toFixed(1) : '–', 'last rep (s)'],
+             [gaps.length ? (gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : '–', 'avg pace (s)']];
+  }
+  $('statsRow').innerHTML = cells.map(([v, k]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+  $('countLabel').textContent = perleg ? 'reps, both legs' : 'reps';
+}
+
+function renderSets() {
+  if (!doneSets.length) { $('sets').innerHTML = '<p class="note">No sets yet.</p>'; return; }
+  $('sets').innerHTML = '';
+  doneSets.forEach((r, i) => {
+    const div = document.createElement('div');
+    div.className = 'set';
+    const lr = r.reps_left !== null ? ` (L ${r.reps_left} / R ${r.reps_right})` : '';
+    div.innerHTML = `<span><span class="n">Set ${doneSets.length - i}</span> · ${EXERCISES[r.exercise].name} · ${r.person} · ${r.reps} reps${lr}` +
+      `${r.partials ? ` · ${r.partials} partial` : ''}<br><span class="d">${fmtDur(r.duration_ms / 1000)}${r.avg_pace_s ? ` · ${r.avg_pace_s}s per rep` : ''}</span></span>` +
+      FootDB.syncBadge(r.client_id);
+    $('sets').appendChild(div);
+  });
+  FootDB.flush();
+}
+
+let gaugeEls = {};
+function buildGauges() {
+  const ids = ex().mode === 'together' ? ['both'] : ['L', 'R'];
+  $('gauges').innerHTML = ids.map(id => {
+    const label = id === 'both' ? 'Leg angle (average)' : (id === 'L' ? 'Left leg' : 'Right leg');
+    const sw = id === 'both' ? '' : `<span class="swatch" style="background:var(--pod-${id})"></span>`;
+    return `<div class="gauge" data-id="${id}"><div class="hd"><b>${sw}${label}</b><span class="val">–</span></div>
+      <div class="bar"><div class="fill"></div><div class="mk dn"></div><div class="mk pt"></div><div class="mk up"></div></div></div>`;
+  }).join('');
+  gaugeEls = {};
+  $('gauges').querySelectorAll('.gauge').forEach(g => {
+    const id = g.dataset.id;
+    gaugeEls[id] = { val: g.querySelector('.val'), fill: g.querySelector('.fill'), dn: g.querySelector('.dn'), pt: g.querySelector('.pt'), up: g.querySelector('.up') };
+    gaugeEls[id].fill.style.background = id === 'both' ? 'var(--text)' : `var(--pod-${id})`;
+  });
+  drawGauges(true);
+}
+
+function drawGauges(marks) {
+  const max = ex().max, pct = d => `${Math.max(0, Math.min(d, max)) / max * 100}%`;
+  for (const [id, el] of Object.entries(gaugeEls)) {
+    if (marks) { el.dn.style.left = pct(thr.down); el.pt.style.left = pct(thr.partial); el.up.style.left = pct(thr.up); }
+    const ang = channelAngle({ id });
+    el.val.textContent = isNaN(ang) ? (Object.values(pods).some(p => p.ref) ? '–' : 'set at Start') : Math.round(ang) + '°';
+    el.fill.style.width = isNaN(ang) ? '0' : pct(ang);
+  }
+}
+
+function applyExercise() {
+  $('exHint').textContent = ex().hint;
+  loadThr(); showThr(); buildGauges(); renderStats();
+  $('suggestBtn').disabled = !(lastSetPeaks[exKey] && lastSetPeaks[exKey].length >= 3);
+}
+
+function updateButtons() {
+  if (conn) conn.refresh();
+  const anyLive = Object.values(pods).some(p => p.connected);
+  $('startBtn').disabled = starting || (!armed && !anyLive);
+  $('startBtn').textContent = armed ? 'Stop set' : 'Start set';
+  $('startBtn').className = armed ? 'danger' : 'primary';
+  $('person').disabled = armed || starting;
+  document.querySelectorAll('#exGrid input').forEach(i => { i.disabled = armed || starting; });
+  $('suggestBtn').disabled = armed || !(lastSetPeaks[exKey] && lastSetPeaks[exKey].length >= 3);
+}
+
+function frame() {
+  drawGauges(false);
+  $('setTime').textContent = armed ? fmtDur((Date.now() - set.start) / 1000) + (set.moved.length ? ` · ${set.moved.join(' & ')} pod moved during start, angles may be off` : '')
+                                   : 'Ready';
+  requestAnimationFrame(frame);
+}
+
+const getPerson = FootDB.personUI($('person'));
+FootDB.accountUI($('acctCard'), 'sets');
+window.addEventListener('beforeunload', e => { if (armed) { e.preventDefault(); e.returnValue = ''; } });
+applyExercise();
+updateButtons();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
