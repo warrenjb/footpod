@@ -50,10 +50,13 @@ static const uint8_t SAMPLES_PER_PKT = 19;   // 8-byte header + 19*12 = 236 byte
 const uint32_t SLEEP_IDLE_MS           = 5UL * 60 * 1000;   // still + not connected
 const uint32_t SLEEP_IDLE_CONNECTED_MS = 15UL * 60 * 1000;  // still + page connected
 const float    MOTION_G     = 0.05f;   // accel deviation from gravity that counts as movement
-const float    MOTION_DPS   = 15.0f;   // rotation rate that counts as movement
+const float    MOTION_DPS   = 20.0f;   // rotation (above the gyro's own offset) that counts as movement
 const uint8_t  WAKE_THRESHOLD = 2;     // wake level in sleep, x31 mg (2 = ~62 mg)
 static uint32_t lastActivityMs = 0;
 static float gravX = 0, gravY = 0, gravZ = 1;   // low-passed accel, g
+static float gyroBias[3] = {0, 0, 0};           // low-passed gyro, dps (tracks the offset)
+static bool  sleepFilterInit = false;
+#define REG_INT1_CTRL 0x0D
 
 // ---------------- BLE UUIDs ----------------
 // Service: a3c40000-5f1d-4b8e-9c3a-7d1e2f3b4c50
@@ -180,10 +183,16 @@ void goToSleep() {
   imu.writeRegister(REG_WAKE_UP_DUR, 0x00);
   imu.writeRegister(REG_WAKE_UP_THS, WAKE_THRESHOLD & 0x3F);
   imu.writeRegister(REG_TAP_CFG, 0x90);              // interrupts on, high-pass slope filter
+  imu.writeRegister(REG_INT1_CTRL, 0x00);            // nothing else on INT1
   imu.writeRegister(REG_MD1_CFG, 0x20);              // wake-up -> INT1
   delay(200);                                        // let the filter settle
   uint8_t junk;
-  imu.readRegister(&junk, REG_WAKE_UP_SRC);          // clear any pending event
+  pinMode(PIN_LSM6DS3TR_C_INT1, INPUT);
+  for (int i = 0; i < 20; i++) {                     // wait for INT1 to be quiet
+    imu.readRegister(&junk, REG_WAKE_UP_SRC);        // clear any pending event
+    if (digitalRead(PIN_LSM6DS3TR_C_INT1) == LOW) break;
+    delay(50);
+  }
 
   // The IMU power pin keeps its state in System OFF, so the sensor stays on.
   // INT1 going HIGH wakes the board, which restarts from setup().
@@ -192,25 +201,43 @@ void goToSleep() {
 
 void checkSleep(uint32_t ms, const int16_t* v) {
   float ax = v[3] * 0.000488f, ay = v[4] * 0.000488f, az = v[5] * 0.000488f;
+  float g[3] = { v[0] * 0.070f, v[1] * 0.070f, v[2] * 0.070f };
+  if (!sleepFilterInit) {
+    gravX = ax; gravY = ay; gravZ = az;
+    for (int k = 0; k < 3; k++) gyroBias[k] = g[k];
+    sleepFilterInit = true;
+  }
   const float a = 1.0f / IMU_ODR_HZ;                 // ~1 s time constant
   gravX += a * (ax - gravX); gravY += a * (ay - gravY); gravZ += a * (az - gravZ);
   float dx = ax - gravX, dy = ay - gravY, dz = az - gravZ;
-  float gmax = max(max(abs(v[0]), abs(v[1])), abs(v[2])) * 0.070f;
-  if (dx * dx + dy * dy + dz * dz > MOTION_G * MOTION_G || gmax > MOTION_DPS) lastActivityMs = ms;
+  bool rotating = false;
+  for (int k = 0; k < 3; k++) {
+    gyroBias[k] += a * (g[k] - gyroBias[k]);
+    if (fabsf(g[k] - gyroBias[k]) > MOTION_DPS) rotating = true;
+  }
+  if (dx * dx + dy * dy + dz * dz > MOTION_G * MOTION_G || rotating) lastActivityMs = ms;
 }
 
 void maybeSleep(uint32_t ms) {
   static uint32_t lastCheck = 0;
   if (ms - lastCheck < 1000) return;
   lastCheck = ms;
-  if (onUsbPower()) { lastActivityMs = ms; return; }
+  if (onUsbPower()) return;                          // never sleep on USB (still-time keeps counting)
   uint32_t limit = Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS;
   if (ms - lastActivityMs > limit) goToSleep();
 }
 
 void setup() {
+  uint32_t resetReason = readResetReason();          // saved by the core at boot
+  bool wokeFromSleep = resetReason & POWER_RESETREAS_OFF_Msk;
+
   Serial.begin(115200);
   delay(500);
+  if (wokeFromSleep) {                               // two green blinks = woke from sleep
+    pinMode(LED_GREEN, OUTPUT);
+    for (int i = 0; i < 2; i++) { digitalWrite(LED_GREEN, LOW); delay(150); digitalWrite(LED_GREEN, HIGH); delay(150); }
+  }
+  Serial.println(wokeFromSleep ? "Woke from sleep (motion)" : "Power-on / reset");
 
 #ifdef PIN_LSM6DS3TR_C_POWER
   pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);   // the Sense board switches IMU power
@@ -274,7 +301,9 @@ void loop() {
     Serial.print(Bluefruit.connected() ? "yes" : "no");
     Serial.print("  still for: ");
     Serial.print((ms - lastActivityMs) / 1000);
-    Serial.println(" s");
+    Serial.print(" s (sleeps at ");
+    Serial.print((Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS) / 1000);
+    Serial.println(" s on battery)");
     statSamples = 0;
     statLastMs = ms;
   }
