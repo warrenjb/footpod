@@ -49,13 +49,18 @@ static const uint8_t SAMPLES_PER_PKT = 19;   // 8-byte header + 19*12 = 236 byte
 // ---------------- sleep ----------------
 const uint32_t SLEEP_IDLE_MS = 5UL * 60 * 1000;   // still this long -> sleep, even if a page is connected
 // (a forgotten browser tab keeps reconnecting, so a longer "connected" limit kept pods awake for hours)
-const float    MOTION_G     = 0.05f;   // accel deviation from gravity that counts as movement
-const float    MOTION_DPS   = 20.0f;   // rotation (above the gyro's own offset) that counts as movement
+const float    MOTION_G     = 0.08f;   // accel deviation from gravity that counts as movement
+const float    MOTION_DPS   = 25.0f;   // rotation (above the gyro's own offset) that counts as movement
+const uint16_t MOTION_MIN_SAMPLES = 20; // per second (~50 ms at 416 Hz): ignores single bumps and glitches
 const uint8_t  WAKE_THRESHOLD = 2;     // wake level in sleep, x31 mg (2 = ~62 mg)
 static uint32_t lastActivityMs = 0;
 static float gravX = 0, gravY = 0, gravZ = 1;   // low-passed accel, g
 static float gyroBias[3] = {0, 0, 0};           // low-passed gyro, dps (tracks the offset)
 static bool  sleepFilterInit = false;
+static uint32_t secStartMs = 0;            // 1-second movement windows
+static uint16_t secMoving = 0;             // samples over threshold in this window
+static float    secPeakG = 0, secPeakDps = 0;
+static uint16_t trigMg = 0, trigDps = 0;   // size of the movement that last reset the still timer
 #define REG_INT1_CTRL 0x0D
 
 // ---------------- BLE UUIDs ----------------
@@ -79,6 +84,8 @@ struct __attribute__((packed)) Stat {
   uint8_t  flags;      // bit0 USB power, bit1 woke from sleep, bit2 page connected
   uint8_t  version;
   uint8_t  sleeps;     // times it has slept since the last cold start (63 max)
+  uint16_t trig_mg;    // accel deviation (mg) of the movement that last reset the still timer
+  uint16_t trig_dps;   // rotation (deg/s) of that movement
 };
 static bool wokeFromSleep = false;
 static uint8_t sleepCount = 0;
@@ -248,7 +255,19 @@ void checkSleep(uint32_t ms, const int16_t* v) {
     gyroBias[k] += a * (g[k] - gyroBias[k]);
     if (fabsf(g[k] - gyroBias[k]) > MOTION_DPS) rotating = true;
   }
-  if (dx * dx + dy * dy + dz * dz > MOTION_G * MOTION_G || rotating) lastActivityMs = ms;
+  float devG = sqrtf(dx * dx + dy * dy + dz * dz);
+  float devDps = 0;
+  for (int k = 0; k < 3; k++) devDps = max(devDps, fabsf(g[k] - gyroBias[k]));
+  if (devG > MOTION_G || rotating) secMoving++;
+  secPeakG = max(secPeakG, devG); secPeakDps = max(secPeakDps, devDps);
+  if (ms - secStartMs >= 1000) {
+    if (secMoving >= MOTION_MIN_SAMPLES) {   // sustained movement this second
+      lastActivityMs = ms;
+      trigMg = (uint16_t)min(secPeakG * 1000.0f, 65535.0f);
+      trigDps = (uint16_t)min(secPeakDps, 65535.0f);
+    }
+    secStartMs = ms; secMoving = 0; secPeakG = 0; secPeakDps = 0;
+  }
 }
 
 void maybeSleep(uint32_t ms) {
@@ -347,8 +366,10 @@ void loop() {
     st.still_s  = (uint16_t)min((ms - lastActivityMs) / 1000, (uint32_t)65535);
     st.limit_s  = SLEEP_IDLE_MS / 1000;
     st.flags    = (onUsbPower() ? 1 : 0) | (wokeFromSleep ? 2 : 0) | (Bluefruit.connected() ? 4 : 0);
-    st.version  = 3;
+    st.version  = 4;
     st.sleeps   = sleepCount;
+    st.trig_mg  = trigMg;
+    st.trig_dps = trigDps;
     statChr.write(&st, sizeof(st));
     if (Bluefruit.connected() && statChr.notifyEnabled()) statChr.notify(&st, sizeof(st));
     statLastMs = ms;

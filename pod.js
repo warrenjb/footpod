@@ -89,7 +89,9 @@ const FootPod = (() => {
       const f = dv.getUint8(8);
       this.stat = { uptime: dv.getUint32(0, true), still: dv.getUint16(4, true), limit: dv.getUint16(6, true),
                     usb: !!(f & 1), woke: !!(f & 2), connected: !!(f & 4),
-                    sleeps: dv.byteLength >= 11 ? dv.getUint8(10) : null };
+                    sleeps: dv.byteLength >= 11 ? dv.getUint8(10) : null,
+                    trigMg: dv.byteLength >= 15 ? dv.getUint16(11, true) : null,
+                    trigDps: dv.byteLength >= 15 ? dv.getUint16(13, true) : null };
       this.h.onStat && this.h.onStat(this);
       if (this._diag) this._diag(this);
     }
@@ -147,7 +149,8 @@ const FootPod = (() => {
         const awake = st.woke ? `woke from sleep ${fmt(st.uptime)} ago` + (st.sleeps ? ` (slept ${st.sleeps}×)` : '')
                               : `on since power-up ${fmt(st.uptime)} ago`;
         d.textContent = (st.usb ? `On USB, won't sleep · still ${fmt(st.still)}`
-                                : `Still ${fmt(st.still)} of ${fmt(st.limit)} before sleep`) + ' · ' + awake;
+                                : `Still ${fmt(st.still)} of ${fmt(st.limit)} before sleep`) + ' · ' + awake +
+          (st.trigMg ? ` · last movement ${(st.trigMg / 1000).toFixed(2)} g, ${st.trigDps}°/s` : '');
       };
     }
     const refresh = () => {
