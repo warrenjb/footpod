@@ -6,8 +6,8 @@
 //          -> Seeed XIAO nRF52840 Sense
 // Library: "Seeed Arduino LSM6DS3" (Library Manager)
 //
-// Sleep: after SLEEP_IDLE_MS without movement (longer while the page is
-// connected) the pod blinks purple three times and powers down. The IMU stays
+// Sleep: after SLEEP_IDLE_MS without movement (connected or not) the pod
+// blinks purple three times and powers down. The IMU stays
 // on in a low-power wake-on-motion mode; tap or pick up the pod and it
 // restarts as if just powered on. It never sleeps while on USB power.
 // Type 'q' in the Serial Monitor to sleep immediately.
@@ -47,8 +47,8 @@ static const uint8_t SAMPLES_PER_PKT = 19;   // 8-byte header + 19*12 = 236 byte
 #define G_FS_2000DPS  0x0C    // ±2000 dps -> 70 mdps/LSB
 
 // ---------------- sleep ----------------
-const uint32_t SLEEP_IDLE_MS           = 5UL * 60 * 1000;   // still + not connected
-const uint32_t SLEEP_IDLE_CONNECTED_MS = 15UL * 60 * 1000;  // still + page connected
+const uint32_t SLEEP_IDLE_MS = 5UL * 60 * 1000;   // still this long -> sleep, even if a page is connected
+// (a forgotten browser tab keeps reconnecting, so a longer "connected" limit kept pods awake for hours)
 const float    MOTION_G     = 0.05f;   // accel deviation from gravity that counts as movement
 const float    MOTION_DPS   = 20.0f;   // rotation (above the gyro's own offset) that counts as movement
 const uint8_t  WAKE_THRESHOLD = 2;     // wake level in sleep, x31 mg (2 = ~62 mg)
@@ -78,8 +78,13 @@ struct __attribute__((packed)) Stat {
   uint16_t limit_s;    // sleeps when still_s passes this (on battery)
   uint8_t  flags;      // bit0 USB power, bit1 woke from sleep, bit2 page connected
   uint8_t  version;
+  uint8_t  sleeps;     // times it has slept since the last cold start (63 max)
 };
 static bool wokeFromSleep = false;
+static uint8_t sleepCount = 0;
+// GPREGRET2 survives System OFF (the bootloader clears RESETREAS, so we can't
+// rely on that). We store 0x80 | sleep count there just before sleeping.
+#define SLEEP_MARK 0x80
 BLEDis            bledis;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
@@ -200,10 +205,10 @@ void goToSleep() {
   imu.writeRegister(REG_CTRL6_C, 0x10);              // accel high-performance off
   imu.writeRegister(REG_WAKE_UP_DUR, 0x00);
   imu.writeRegister(REG_WAKE_UP_THS, WAKE_THRESHOLD & 0x3F);
-  imu.writeRegister(REG_TAP_CFG, 0x90);              // interrupts on, high-pass slope filter
+  imu.writeRegister(REG_TAP_CFG, 0x80);              // interrupts on, slope filter (no settling time)
   imu.writeRegister(REG_INT1_CTRL, 0x00);            // nothing else on INT1
   imu.writeRegister(REG_MD1_CFG, 0x20);              // wake-up -> INT1
-  delay(200);                                        // let the filter settle
+  delay(500);                                        // a dozen samples at 26 Hz
   uint8_t junk;
   pinMode(PIN_LSM6DS3TR_C_INT1, INPUT);
   for (int i = 0; i < 20; i++) {                     // wait for INT1 to be quiet
@@ -216,6 +221,11 @@ void goToSleep() {
   // LED pin would stay lit all night.
   ledsOff();
   pinMode(LED_RED, INPUT); pinMode(LED_GREEN, INPUT); pinMode(LED_BLUE, INPUT);
+
+  // Remember that we slept, so the next boot knows it was a wake-up.
+  uint8_t mark = SLEEP_MARK | (uint8_t)min((int)sleepCount + 1, 63);
+  sd_power_gpregret_clr(1, 0xFF);
+  sd_power_gpregret_set(1, mark);
 
   // The IMU power pin keeps its state in System OFF, so the sensor stays on.
   // INT1 going HIGH wakes the board, which restarts from setup().
@@ -246,13 +256,15 @@ void maybeSleep(uint32_t ms) {
   if (ms - lastCheck < 1000) return;
   lastCheck = ms;
   if (onUsbPower()) return;                          // never sleep on USB (still-time keeps counting)
-  uint32_t limit = Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS;
-  if (ms - lastActivityMs > limit) goToSleep();
+  if (ms - lastActivityMs > SLEEP_IDLE_MS) goToSleep();
 }
 
 void setup() {
-  uint32_t resetReason = readResetReason();          // saved by the core at boot
-  wokeFromSleep = resetReason & POWER_RESETREAS_OFF_Msk;
+  uint32_t resetReason = readResetReason();          // saved by the core at boot (often cleared by the bootloader)
+  uint8_t mark = NRF_POWER->GPREGRET2;               // SoftDevice not running yet, direct access is fine
+  NRF_POWER->GPREGRET2 = 0;
+  wokeFromSleep = (mark & SLEEP_MARK) || (resetReason & POWER_RESETREAS_OFF_Msk);
+  sleepCount = (mark & SLEEP_MARK) ? (mark & 0x3F) : 0;
 
   Serial.begin(115200);
   delay(500);
@@ -260,7 +272,8 @@ void setup() {
     pinMode(LED_GREEN, OUTPUT);
     for (int i = 0; i < 2; i++) { digitalWrite(LED_GREEN, LOW); delay(150); digitalWrite(LED_GREEN, HIGH); delay(150); }
   }
-  Serial.println(wokeFromSleep ? "Woke from sleep (motion)" : "Power-on / reset");
+  if (wokeFromSleep) { Serial.print("Woke from sleep, sleeps since power-on: "); Serial.println(sleepCount); }
+  else Serial.println("Power-on / reset");
 
 #ifdef PIN_LSM6DS3TR_C_POWER
   pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);   // the Sense board switches IMU power
@@ -325,16 +338,17 @@ void loop() {
     Serial.print("  still for: ");
     Serial.print((ms - lastActivityMs) / 1000);
     Serial.print(" s (sleeps at ");
-    Serial.print((Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS) / 1000);
+    Serial.print(SLEEP_IDLE_MS / 1000);
     Serial.println(" s on battery)");
     statSamples = 0;
 
     Stat st;
     st.uptime_s = ms / 1000;
     st.still_s  = (uint16_t)min((ms - lastActivityMs) / 1000, (uint32_t)65535);
-    st.limit_s  = (Bluefruit.connected() ? SLEEP_IDLE_CONNECTED_MS : SLEEP_IDLE_MS) / 1000;
+    st.limit_s  = SLEEP_IDLE_MS / 1000;
     st.flags    = (onUsbPower() ? 1 : 0) | (wokeFromSleep ? 2 : 0) | (Bluefruit.connected() ? 4 : 0);
-    st.version  = 2;
+    st.version  = 3;
+    st.sleeps   = sleepCount;
     statChr.write(&st, sizeof(st));
     if (Bluefruit.connected() && statChr.notifyEnabled()) statChr.notify(&st, sizeof(st));
     statLastMs = ms;

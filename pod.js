@@ -88,7 +88,8 @@ const FootPod = (() => {
       if (dv.byteLength < 10) return;
       const f = dv.getUint8(8);
       this.stat = { uptime: dv.getUint32(0, true), still: dv.getUint16(4, true), limit: dv.getUint16(6, true),
-                    usb: !!(f & 1), woke: !!(f & 2), connected: !!(f & 4) };
+                    usb: !!(f & 1), woke: !!(f & 2), connected: !!(f & 4),
+                    sleeps: dv.byteLength >= 11 ? dv.getUint8(10) : null };
       this.h.onStat && this.h.onStat(this);
       if (this._diag) this._diag(this);
     }
@@ -143,8 +144,10 @@ const FootPod = (() => {
       pods[side]._diag = p => {
         const st = p.stat, d = el.querySelector('.diag');
         if (!st || !p.connected) { d.textContent = ''; return; }
-        d.textContent = st.usb ? `On USB, won't sleep · still ${fmt(st.still)}`
-          : `Still ${fmt(st.still)} of ${fmt(st.limit)} before sleep` + (st.woke ? ` · woke from sleep ${fmt(st.uptime)} ago` : '');
+        const awake = st.woke ? `woke from sleep ${fmt(st.uptime)} ago` + (st.sleeps ? ` (slept ${st.sleeps}×)` : '')
+                              : `on since power-up ${fmt(st.uptime)} ago`;
+        d.textContent = (st.usb ? `On USB, won't sleep · still ${fmt(st.still)}`
+                                : `Still ${fmt(st.still)} of ${fmt(st.limit)} before sleep`) + ' · ' + awake;
       };
     }
     const refresh = () => {
