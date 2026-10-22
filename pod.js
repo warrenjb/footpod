@@ -9,6 +9,18 @@ const FootPod = (() => {
   const ACC_CLIP = 15.9, GYR_CLIP = 1990;
 
   const supported = !!navigator.bluetooth;
+
+  // Rough LiPo state of charge from resting voltage (single cell, light load).
+  const CURVE = [[4200, 100], [4100, 90], [4000, 80], [3900, 65], [3800, 50], [3750, 40],
+                 [3700, 30], [3650, 20], [3550, 10], [3400, 5], [3300, 0]];
+  function battPercent(mv) {
+    if (mv >= CURVE[0][0]) return 100;
+    for (let i = 1; i < CURVE.length; i++) {
+      const [v1, p1] = CURVE[i - 1], [v2, p2] = CURVE[i];
+      if (mv >= v2) return Math.round(p2 + (p1 - p2) * (mv - v2) / (v1 - v2));
+    }
+    return 0;
+  }
   const sideFromName = name => /-?R$/i.test(name || '') ? 'R' : 'L';
 
   async function requestDevice() {
@@ -91,7 +103,9 @@ const FootPod = (() => {
                     usb: !!(f & 1), woke: !!(f & 2), connected: !!(f & 4),
                     sleeps: dv.byteLength >= 11 ? dv.getUint8(10) : null,
                     trigMg: dv.byteLength >= 15 ? dv.getUint16(11, true) : null,
-                    trigDps: dv.byteLength >= 15 ? dv.getUint16(13, true) : null };
+                    trigDps: dv.byteLength >= 15 ? dv.getUint16(13, true) : null,
+                    battMv: dv.byteLength >= 17 ? dv.getUint16(15, true) : null };
+      this.stat.battPct = this.stat.battMv ? battPercent(this.stat.battMv) : null;
       this.h.onStat && this.h.onStat(this);
       if (this._diag) this._diag(this);
     }
@@ -148,7 +162,9 @@ const FootPod = (() => {
         if (!st || !p.connected) { d.textContent = ''; return; }
         const awake = st.woke ? `woke from sleep ${fmt(st.uptime)} ago` + (st.sleeps ? ` (slept ${st.sleeps}×)` : '')
                               : `on since power-up ${fmt(st.uptime)} ago`;
-        d.textContent = (st.usb ? `On USB, won't sleep · still ${fmt(st.still)}`
+        const batt = st.battMv ? (st.usb ? `Battery ${(st.battMv / 1000).toFixed(2)} V, charging · `
+                                         : `Battery ~${st.battPct}% (${(st.battMv / 1000).toFixed(2)} V) · `) : '';
+        d.textContent = batt + (st.usb ? `On USB, won't sleep · still ${fmt(st.still)}`
                                 : `Still ${fmt(st.still)} of ${fmt(st.limit)} before sleep`) + ' · ' + awake +
           (st.trigMg ? ` · last movement ${(st.trigMg / 1000).toFixed(2)} g, ${st.trigDps}°/s` : '');
       };
@@ -179,5 +195,5 @@ const FootPod = (() => {
     return { refresh, setStatus };
   }
 
-  return { Pod, requestDevice, sideFromName, connectionUI, supported, SVC, CHR, STAT, PKT_LEN, ACC, GYR };
+  return { Pod, requestDevice, sideFromName, connectionUI, battPercent, supported, SVC, CHR, STAT, PKT_LEN, ACC, GYR };
 })();

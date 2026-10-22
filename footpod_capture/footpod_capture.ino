@@ -86,7 +86,9 @@ struct __attribute__((packed)) Stat {
   uint8_t  sleeps;     // times it has slept since the last cold start (63 max)
   uint16_t trig_mg;    // accel deviation (mg) of the movement that last reset the still timer
   uint16_t trig_dps;   // rotation (deg/s) of that movement
+  uint16_t batt_mv;    // battery voltage, millivolts (0 = not read yet)
 };
+static uint16_t battMv = 0;
 static bool wokeFromSleep = false;
 static uint8_t sleepCount = 0;
 // GPREGRET2 survives System OFF (the bootloader clears RESETREAS, so we can't
@@ -183,6 +185,18 @@ void setupBle() {
 }
 
 // ---------------- sleep ----------------
+// ---------------- battery ----------------
+// P0.31 reads the battery through a 1M / 510k divider. P0.14 (VBAT_ENABLE) must be
+// LOW to connect it; Seeed warns that leaving it HIGH can over-volt P0.31 while
+// charging, so we keep it LOW all the time (the divider draws ~3 uA).
+void readBattery() {
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; i++) sum += analogRead(PIN_VBAT);
+  float vadc = (sum / 8.0f) * 3.6f / 4096.0f;        // internal 0.6 V ref x6 gain = 3.6 V full scale
+  uint16_t mv = (uint16_t)(vadc * (1510.0f / 510.0f) * 1000.0f);
+  battMv = battMv ? (uint16_t)((battMv * 3 + mv) / 4) : mv;   // light smoothing
+}
+
 bool onUsbPower() {
   uint32_t status = 0;
   sd_power_usbregstatus_get(&status);
@@ -285,6 +299,11 @@ void setup() {
   wokeFromSleep = (mark & SLEEP_MARK) || (resetReason & POWER_RESETREAS_OFF_Msk);
   sleepCount = (mark & SLEEP_MARK) ? (mark & 0x3F) : 0;
 
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, LOW);                    // battery sense on (see readBattery)
+  analogReadResolution(12);
+  analogSampleTime(40);                              // divider is high impedance: give the ADC time
+
   Serial.begin(115200);
   delay(500);
   if (wokeFromSleep) {                               // two green blinks = woke from sleep
@@ -356,7 +375,9 @@ void loop() {
     Serial.print(Bluefruit.connected() ? "yes" : "no");
     Serial.print("  still for: ");
     Serial.print((ms - lastActivityMs) / 1000);
-    Serial.print(" s (sleeps at ");
+    Serial.print(" s  battery: ");
+    Serial.print(battMv);
+    Serial.print(" mV (sleeps at ");
     Serial.print(SLEEP_IDLE_MS / 1000);
     Serial.println(" s on battery)");
     statSamples = 0;
@@ -366,7 +387,10 @@ void loop() {
     st.still_s  = (uint16_t)min((ms - lastActivityMs) / 1000, (uint32_t)65535);
     st.limit_s  = SLEEP_IDLE_MS / 1000;
     st.flags    = (onUsbPower() ? 1 : 0) | (wokeFromSleep ? 2 : 0) | (Bluefruit.connected() ? 4 : 0);
-    st.version  = 4;
+    static uint32_t lastBattMs = 0;
+    if (!battMv || ms - lastBattMs >= 10000) { readBattery(); lastBattMs = ms; }
+    st.batt_mv  = battMv;
+    st.version  = 5;
     st.sleeps   = sleepCount;
     st.trig_mg  = trigMg;
     st.trig_dps = trigDps;
