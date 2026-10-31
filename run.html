@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Foot Pod Running</title>
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 <style>
   .podhead { display: flex; align-items: center; gap: 8px; }
   .podhead .meta { margin-left: auto; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; text-align: right; }
@@ -62,7 +62,7 @@
     <p class="note warn-text mtu" hidden>Packets are arriving split up — the Bluetooth MTU didn't negotiate. Disconnect and reconnect this pod.</p>
     <div class="chart-title" style="margin-top:12px"><b>Acceleration</b><span>magnitude, g · last 5 s</span></div>
     <canvas class="live acc"></canvas>
-    <div class="chart-title" style="margin-top:10px"><b>Foot pitch rate</b><span>deg/s · dots = detected strides</span></div>
+    <div class="chart-title" style="margin-top:10px"><b>Foot pitch rate</b><span>smoothed, deg/s · dots = strides</span></div>
     <canvas class="live gyr"></canvas>
     <h3>Mounting check</h3>
     <ol class="steps-list">
@@ -79,8 +79,8 @@
   </div>
 </template>
 
-<script src="pod.js?v=6"></script>
-<script src="db.js?v=6"></script>
+<script src="pod.js?v=7"></script>
+<script src="db.js?v=7"></script>
 <script>
 const WINDOW_S = 5, MIN_STRIDE_S = 0.4, MAX_GAP_S = 2.5, RING = 4096;
 const ACC = FootPod.ACC, GYR = FootPod.GYR;
@@ -90,6 +90,25 @@ function median(arr) {
   if (!arr.length) return NaN;
   const s = [...arr].sort((x, y) => x - y), m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+// Stride detection works on a 3 Hz low-passed gyro: the swing is a smooth ~1 Hz wave, while
+// heel strike rings at 10-40 Hz and was being counted as a second stride (tested on a real
+// 40-minute walk/jog recording: raw detector +48% steps, smoothed detector within 1-2 strides/min).
+const LP_HZ = 3;
+function lpCoef(fs) {
+  const w0 = 2 * Math.PI * LP_HZ / fs, c = Math.cos(w0), al = Math.sin(w0) / (2 * Math.SQRT1_2), a0 = 1 + al;
+  return [(1 - c) / 2 / a0, (1 - c) / a0, (1 - c) / 2 / a0, -2 * c / a0, (1 - al) / a0];
+}
+function lpStep(B, st, k, x) {          // biquad, direct form II transposed
+  const y = B[0] * x + st.z1[k];
+  st.z1[k] = B[1] * x - B[3] * y + st.z2[k];
+  st.z2[k] = B[2] * x - B[4] * y;
+  return y;
+}
+function lpArray(arr, fs) { const B = lpCoef(fs), st = { z1: [0], z2: [0] }; return arr.map(x => lpStep(B, st, 0, x)); }
+function pctl(arr, q) { const s = [...arr].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; }
+function minStrideGap(intervals) {      // adaptive: no closer than 60% of the recent typical stride
+  return intervals.length >= 3 ? Math.max(MIN_STRIDE_S, 0.6 * median(intervals.slice(-8))) : MIN_STRIDE_S;
 }
 const fmtDur = s => { s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 const round1 = v => isNaN(v) ? null : Math.round(v * 10) / 10;
@@ -114,7 +133,8 @@ for (const p of Object.values(pods)) {
     ring: { t: new Float64Array(RING), a: new Float32Array(RING), w: new Float32Array(RING), i: 0, n: 0 },
     markers: [], mount: null, pendingStill: null,
     ema1: [0, 0, 0], ema2: [0, 0, 0], posEnv: [0, 0, 0], negEnv: [0, 0, 0],
-    env: 0, above: false, pkV: 0, pkT: 0, lastStrideT: -1e9, intervals: [], strideCount: 0, els: {}
+    env: 0, above: false, pkV: 0, pkT: 0, lastStrideT: -1e9, intervals: [], strideCount: 0, els: {},
+    lpB: null, lpFs: 0, lpS: { z1: [0, 0, 0], z2: [0, 0, 0] }
   });
 }
 const conn = FootPod.connectionUI($('connCard'), pods, { beforeAttach: p => setTimeout(() => loadMount(p), 0) });
@@ -161,7 +181,8 @@ function updateButtons() {
 function processSample(p, t, a, g) {
   if (collector && collector.pod === p) collect(a, g);
   const bias = p.mount ? p.mount.bias : [0, 0, 0];
-  const gb = [g[0] - bias[0], g[1] - bias[1], g[2] - bias[2]];
+  if (p.lpFs !== p.fs) { p.lpB = lpCoef(p.fs); p.lpFs = p.fs; }
+  const gb = [0, 1, 2].map(k => lpStep(p.lpB, p.lpS, k, g[k] - bias[k]));   // smoothed, offset-free gyro
   const alpha = 1 / (4 * p.fs), decay = Math.exp(-1 / (3 * p.fs));
   for (let k = 0; k < 3; k++) {
     p.ema1[k] += alpha * (gb[k] - p.ema1[k]);
@@ -177,19 +198,20 @@ function processSample(p, t, a, g) {
     sign = p.posEnv[axis] >= p.negEnv[axis] ? 1 : -1;
   }
   const w = sign * gb[axis];
+  if (rec && rec.pods[p.side]) { const rp = rec.pods[p.side]; if (rp.tFirst === undefined) rp.tFirst = t; rp.tLast = t; }
   const r = p.ring;
   r.t[r.i] = t; r.a[r.i] = Math.hypot(a[0], a[1], a[2]); r.w[r.i] = w;
   r.i = (r.i + 1) % RING; r.n = Math.min(r.n + 1, RING);
 
   p.env = Math.max(w, p.env * decay);
-  const thr = Math.max(80, 0.5 * p.env);
+  const thr = Math.max(60, 0.5 * p.env);
   if (!p.above) {
     if (w > thr) { p.above = true; p.pkV = w; p.pkT = t; }
   } else {
     if (w > p.pkV) { p.pkV = w; p.pkT = t; }
-    if (w < thr * 0.6) {
+    if (w < thr * 0.5) {
       p.above = false;
-      if (p.pkT - p.lastStrideT > MIN_STRIDE_S) registerStride(p, p.pkT, p.pkV);
+      if (p.pkT - p.lastStrideT > minStrideGap(p.intervals)) registerStride(p, p.pkT, p.pkV);
     }
   }
 }
@@ -209,7 +231,8 @@ function registerStride(p, t, w) {
   if (p.markers.length > 40) p.markers.shift();
 }
 
-function resetDetector(p) { p.env = 0; p.above = false; p.lastStrideT = -1e9; p.intervals = []; p.markers = []; }
+function resetDetector(p) { p.env = 0; p.above = false; p.lastStrideT = -1e9; p.intervals = []; p.markers = [];
+  p.lpS = { z1: [0, 0, 0], z2: [0, 0, 0] }; }
 
 function strideRate(p) {                   // strides/min for one foot, NaN if not striding now
   if (!p.ring.n || p.intervals.length < 2 || !p.live) return NaN;
@@ -261,16 +284,20 @@ function startCollect(p, phase, seconds, what) {
   tick();
 }
 
-function countStrides(arr, fs) {
+function countStrides(arr, fs) {          // same rules as the live detector, on an already-smoothed signal
   let e = 0, ab = false, pv = 0, pi = 0, last = -1e9, count = 0;
-  const decay = Math.exp(-1 / (3 * fs));
+  const ivs = [], decay = Math.exp(-1 / (3 * fs));
   arr.forEach((w, i) => {
     e = Math.max(w, e * decay);
-    const thr = Math.max(80, 0.5 * e);
+    const thr = Math.max(60, 0.5 * e);
     if (!ab) { if (w > thr) { ab = true; pv = w; pi = i; } }
     else {
       if (w > pv) { pv = w; pi = i; }
-      if (w < thr * 0.6) { ab = false; if ((pi - last) / fs > MIN_STRIDE_S) { count++; last = pi; } }
+      if (w < thr * 0.5) {
+        ab = false;
+        const iv = (pi - last) / fs;
+        if (iv > minStrideGap(ivs)) { if (iv < MAX_GAP_S) ivs.push(iv); count++; last = pi; }
+      }
     }
   });
   return count;
@@ -293,17 +320,18 @@ function finishCollect() {
       p.els.mres.innerHTML = `<span class="ok">Still reading OK.</span> ${describeGravity(grav)}<br>Gyro offset: ${bias.map(v => v.toFixed(2)).join(', ')} deg/s. Now tap <b>Walk</b>.`;
     }
   } else {
-    const vars = c.g.map(arr => {
+    const sm = c.g.map(arr => lpArray(arr, p.fs));          // smooth first: heel-strike ringing fools axis/sign
+    const vars = sm.map(arr => {
       const m = arr.reduce((s, v) => s + v, 0) / arr.length;
       return arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length;
     });
     let axis = 0;
     for (let k = 1; k < 3; k++) if (vars[k] > vars[axis]) axis = k;
-    const arr = c.g[axis];
-    const mx = Math.max(...arr), mn = Math.min(...arr);
+    const arr = sm[axis];
+    const mx = pctl(arr, 0.995), mn = pctl(arr, 0.005);
     const sign = mx >= -mn ? 1 : -1;
     const strides = countStrides(arr.map(v => v * sign), p.fs);
-    if (strides < 3 || Math.max(mx, -mn) < 150) {
+    if (strides < 3 || Math.max(mx, -mn) < 100) {
       p.els.mres.innerHTML = `<span class="bad">Couldn't see clear strides</span> (found ${strides}). Walk at a normal pace for the full 8 seconds and try again.`;
     } else {
       p.mount = { ...p.pendingStill, axis, sign, date: new Date().toISOString(), device: p.name };
@@ -383,7 +411,10 @@ function finishRecording() {
   const rate = {};
   for (const s of sides) {
     const pr = r.pods[s];
-    rate[s] = pr.intervals.length ? 60 / median(pr.intervals) : NaN;
+    // average strides per minute over this pod's own recorded time (median stride time misleads
+    // on walk/jog intervals: it lands on whichever pace happened to dominate)
+    const mins = (pr.tLast - pr.tFirst) / 60;
+    rate[s] = mins > 0.1 ? pr.strides / mins : NaN;
     item.files.push({ side: s, name: `${r.label}_${stamp}_${s}.csv`, blob: buildCsv(pr.packets, pr.rx),
                       strides: pr.strides, lost: pr.lost, cadence: 2 * rate[s] });
   }
