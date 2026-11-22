@@ -26,8 +26,21 @@ const FootPod = (() => {
   async function requestDevice() {
     return navigator.bluetooth.requestDevice({
       filters: [{ services: [SVC] }, { namePrefix: 'FootPod' }],
-      optionalServices: [SVC]
+      optionalServices: [SVC, 'generic_access']
     });
+  }
+
+  // Android caches a device's name by its Bluetooth address, so device.name can be stale
+  // (e.g. a board once flashed as FootPod-L keeps that name after becoming FootPod-R).
+  // Reading the GAP Device Name over the connection gets the name the pod uses right now.
+  async function readRealName(device) {
+    try {
+      const server = await device.gatt.connect();
+      const ga = await server.getPrimaryService('generic_access');
+      const c = await ga.getCharacteristic('gap.device_name');
+      const name = new TextDecoder().decode(await c.readValue()).replace(/\0+$/, '').trim();
+      return name || null;
+    } catch (e) { return null; }
   }
 
   // handlers: onSample(pod, tSec, [ax,ay,az] g, [gx,gy,gz] dps), onPacket(pod, bytes, rxMs, lost),
@@ -43,7 +56,7 @@ const FootPod = (() => {
       this.stat = null;   // {uptime, still, limit, usb, woke, connected} from the pod, if its firmware sends it
     }
     get connected() { return !!(this.device && this.device.gatt.connected); }
-    get name() { return (this.device && this.device.name) || ('FootPod-' + this.side); }
+    get name() { return (this.device && (this.device._fpName || this.device.name)) || ('FootPod-' + this.side); }
     get live() { return this.connected && performance.now() - this.lastRx < 1500; }
     status(text, cls) { this.h.onStatus && this.h.onStatus(this, text, cls); }
     changed() { this.h.onChange && this.h.onChange(this); }
@@ -184,7 +197,15 @@ const FootPod = (() => {
     btn.onclick = async () => {
       try {
         const device = await requestDevice();
-        const p = pods[sideFromName(device.name)];
+        device._fpName = (await readRealName(device)) || device.name;
+        let side = sideFromName(device._fpName);
+        // Backup: never knock off a different, connected pod; use the free slot instead.
+        const other = side === 'L' ? 'R' : 'L';
+        if (pods[side].connected && pods[side].device !== device && !pods[other].connected) {
+          side = other;
+          device._fpName = 'FootPod-' + side;   // name unreliable: label it by its slot so calibrations don't collide
+        }
+        const p = pods[side];
         if (opts.beforeAttach) opts.beforeAttach(p, device);
         await p.attach(device);
       } catch (e) {
