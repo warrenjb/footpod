@@ -77,6 +77,13 @@ const uint8_t STAT_UUID[16] = {0x50,0x4c,0x3b,0x2f,0x1e,0x7d,0x3a,0x9c,
 BLEService        podSvc(SVC_UUID);
 BLECharacteristic imuChr(IMU_UUID);
 BLECharacteristic statChr(STAT_UUID);
+
+// Standard Running Speed and Cadence service, so Zwift / watches / nRF Toolbox see a foot pod.
+// Cadence is worked out on the pod with the same detector as run.html.
+BLEService        rscSvc(0x1814);
+BLECharacteristic rscMeas(0x2A53);    // notify: flags, speed (1/256 m/s), cadence (steps/min)
+BLECharacteristic rscFeat(0x2A54);    // read: supported features (none extra)
+BLECharacteristic rscLoc(0x2A5D);     // read: sensor location (1 = top of shoe)
 struct __attribute__((packed)) Stat {
   uint32_t uptime_s;   // seconds since this boot
   uint16_t still_s;    // seconds without movement
@@ -111,6 +118,93 @@ static Pkt pkt;
 // stats for the serial monitor
 static uint32_t statSamples = 0, statNotifyFail = 0, statLastMs = 0;
 
+// ---------------- on-pod stride detection (same rules as run.html) ----------------
+// 3 Hz low-pass on the gyro (heel strike rings at 10-40 Hz and was double counting),
+// pick the gyro axis with the most variance (the pitch axis), then peak-detect the swing.
+const float MIN_STRIDE_S = 0.4f, MAX_GAP_S = 2.5f, LP_HZ = 3.0f;
+static float lpB[5];
+static float lpZ1[3] = {0}, lpZ2[3] = {0};
+static float ema1[3] = {0}, ema2[3] = {0}, posEnv[3] = {0}, negEnv[3] = {0};
+static float wEnv = 0, pkV = 0;
+static bool  above = false, haveStride = false;
+static uint32_t pkT = 0, lastStrideUs = 0;
+static float ivs[8]; static uint8_t nIv = 0;
+static uint32_t strideTotal = 0;
+
+void initStrideDetector() {
+  const float fs = IMU_ODR_HZ;
+  float w0 = 2 * PI * LP_HZ / fs, c = cosf(w0), al = sinf(w0) / (2 * 0.70710678f), a0 = 1 + al;
+  lpB[0] = (1 - c) / 2 / a0; lpB[1] = (1 - c) / a0; lpB[2] = (1 - c) / 2 / a0;
+  lpB[3] = -2 * c / a0;      lpB[4] = (1 - al) / a0;
+}
+
+float medianLast(uint8_t n) {
+  if (n > nIv) n = nIv;
+  if (!n) return NAN;
+  float s[8];
+  for (uint8_t i = 0; i < n; i++) s[i] = ivs[nIv - n + i];
+  for (uint8_t i = 1; i < n; i++) { float x = s[i]; int j = i - 1; while (j >= 0 && s[j] > x) { s[j + 1] = s[j]; j--; } s[j + 1] = x; }
+  return n % 2 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+void registerStride(uint32_t t) {
+  if (haveStride) {
+    float iv = (t - lastStrideUs) / 1e6f;
+    if (iv < MAX_GAP_S) {
+      if (nIv == 8) { memmove(ivs, ivs + 1, 7 * sizeof(float)); nIv = 7; }
+      ivs[nIv++] = iv;
+    }
+  }
+  lastStrideUs = t; haveStride = true; strideTotal++;
+}
+
+void strideSample(uint32_t t, const int16_t* v) {
+  const float fs = IMU_ODR_HZ, alpha = 1 / (4 * fs), decay = expf(-1 / (3 * fs));
+  float gb[3];
+  for (int k = 0; k < 3; k++) {
+    float x = v[k] * 0.070f;                       // deg/s
+    float y = lpB[0] * x + lpZ1[k];
+    lpZ1[k] = lpB[1] * x - lpB[3] * y + lpZ2[k];
+    lpZ2[k] = lpB[2] * x - lpB[4] * y;
+    gb[k] = y;
+    ema1[k] += alpha * (gb[k] - ema1[k]);
+    ema2[k] += alpha * (gb[k] * gb[k] - ema2[k]);
+    posEnv[k] = max(gb[k], posEnv[k] * decay);
+    negEnv[k] = max(-gb[k], negEnv[k] * decay);
+  }
+  int axis = 0;
+  for (int k = 1; k < 3; k++)
+    if (ema2[k] - ema1[k] * ema1[k] > ema2[axis] - ema1[axis] * ema1[axis]) axis = k;
+  float w = (posEnv[axis] >= negEnv[axis] ? 1 : -1) * gb[axis];
+
+  wEnv = max(w, wEnv * decay);
+  float thr = max(60.0f, 0.5f * wEnv);
+  if (!above) {
+    if (w > thr) { above = true; pkV = w; pkT = t; }
+  } else {
+    if (w > pkV) { pkV = w; pkT = t; }
+    if (w < thr * 0.5f) {
+      above = false;
+      float minGap = nIv >= 3 ? max(MIN_STRIDE_S, 0.6f * medianLast(8)) : MIN_STRIDE_S;
+      if (!haveStride || (pkT - lastStrideUs) / 1e6f > minGap) registerStride(pkT);
+    }
+  }
+}
+
+// steps per minute for both feet (this foot's stride rate x 2), 0 if not striding
+uint8_t cadenceSpm() {
+  if (!haveStride || nIv < 2 || (micros() - lastStrideUs) / 1e6f > MAX_GAP_S) return 0;
+  float spm = 2 * 60.0f / medianLast(6);
+  return (uint8_t)constrain(lroundf(spm), 0, 254);
+}
+
+// notify every connected central that subscribed (phone page and Zwift can both be connected)
+void notifyAll(BLECharacteristic& c, const void* d, uint16_t n, uint32_t* fails = nullptr) {
+  for (uint16_t h = 0; h < BLE_MAX_CONNECTION; h++)
+    if (Bluefruit.connected(h) && c.notifyEnabled(h))
+      if (!c.notify(h, d, n) && fails) (*fails)++;
+}
+
 // ---------------- BLE callbacks ----------------
 void onConnect(uint16_t conn_handle) {
   BLEConnection* conn = Bluefruit.Connection(conn_handle);
@@ -118,6 +212,8 @@ void onConnect(uint16_t conn_handle) {
   conn->requestDataLengthUpdate();
   conn->requestMtuExchange(247);
   Serial.println("BLE connected");
+  // keep advertising so a second app (phone page + Zwift) can also connect
+  if (Bluefruit.Periph.connected() < 2) Bluefruit.Advertising.start(0);
 }
 
 void onDisconnect(uint16_t conn_handle, uint8_t reason) {
@@ -152,7 +248,7 @@ void configureImu() {
 
 void setupBle() {
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);   // larger MTU + buffers
-  Bluefruit.begin();
+  Bluefruit.begin(2, 0);                          // up to 2 apps at once (phone page + Zwift)
   Bluefruit.setTxPower(4);
   Bluefruit.setName("FootPod-" POD_SIDE);
   Bluefruit.Periph.setConnectCallback(onConnect);
@@ -174,9 +270,26 @@ void setupBle() {
   statChr.setFixedLen(sizeof(Stat));
   statChr.begin();
 
+  rscSvc.begin();
+  rscMeas.setProperties(CHR_PROPS_NOTIFY);
+  rscMeas.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  rscMeas.setFixedLen(4);
+  rscMeas.begin();
+  rscFeat.setProperties(CHR_PROPS_READ);
+  rscFeat.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  rscFeat.setFixedLen(2);
+  rscFeat.begin();
+  rscFeat.write16(0x0000);                         // only the mandatory speed + cadence fields
+  rscLoc.setProperties(CHR_PROPS_READ);
+  rscLoc.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  rscLoc.setFixedLen(1);
+  rscLoc.begin();
+  rscLoc.write8(1);                                // top of shoe
+
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
   Bluefruit.Advertising.addService(podSvc);
+  Bluefruit.Advertising.addService(rscSvc);
   Bluefruit.ScanResponse.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
   Bluefruit.Advertising.setInterval(32, 244);
@@ -333,6 +446,7 @@ void setup() {
   pkt.seq = 0;
   pkt.odr_div8 = IMU_ODR_HZ / 8;
 
+  initStrideDetector();
   setupBle();
   lastActivityMs = millis();
   Serial.println("FootPod-" POD_SIDE " ready, advertising");
@@ -350,12 +464,11 @@ void loop() {
     if (pkt.n == 0) pkt.t0_us = now;
     memcpy(pkt.s[pkt.n], raw, 12);           // nRF52 is little-endian, same as the IMU
     checkSleep(millis(), pkt.s[pkt.n]);
+    strideSample(now, pkt.s[pkt.n]);
     statSamples++;
 
     if (++pkt.n == SAMPLES_PER_PKT) {
-      if (Bluefruit.connected() && imuChr.notifyEnabled()) {
-        if (!imuChr.notify(&pkt, sizeof(pkt))) statNotifyFail++;
-      }
+      notifyAll(imuChr, &pkt, sizeof(pkt), &statNotifyFail);
       pkt.seq++;
       pkt.n = 0;
     }
@@ -379,8 +492,16 @@ void loop() {
     Serial.print(battMv);
     Serial.print(" mV (sleeps at ");
     Serial.print(SLEEP_IDLE_MS / 1000);
-    Serial.println(" s on battery)");
+    Serial.print(" s on battery)  cadence: ");
+    uint8_t spm = cadenceSpm();
+    Serial.print(spm);
+    Serial.print(" spm  strides: ");
+    Serial.println(strideTotal);
     statSamples = 0;
+
+    // RSC measurement: flags (bit2 = running), speed 0 (the treadmill bridge gives speed), cadence
+    uint8_t rsc[4] = { (uint8_t)(spm >= 140 ? 0x04 : 0x00), 0, 0, spm };
+    notifyAll(rscMeas, rsc, sizeof rsc);
 
     Stat st;
     st.uptime_s = ms / 1000;
@@ -395,7 +516,7 @@ void loop() {
     st.trig_mg  = trigMg;
     st.trig_dps = trigDps;
     statChr.write(&st, sizeof(st));
-    if (Bluefruit.connected() && statChr.notifyEnabled()) statChr.notify(&st, sizeof(st));
+    notifyAll(statChr, &st, sizeof(st));
     statLastMs = ms;
   }
 }
